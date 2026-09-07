@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
-import { MapPin, AlertCircle, Clock, ShieldCheck, FileDown, Search, Filter } from 'lucide-react';
+import { MapPin, AlertCircle, ShieldCheck, Search } from 'lucide-react';
 import { PUNE_WARDS_AUDIT_DATA } from './wardData';
 import type { StoreAuditRecord } from './wardData';
 import 'leaflet/dist/leaflet.css';
@@ -13,7 +13,7 @@ function MapRecenter({ lat, lng }: { lat: number; lng: number }) {
 }
 
 export function WardInspectionDashboard() {
-  const [stores, setStores] = useState<StoreAuditRecord[]>(PUNE_WARDS_AUDIT_DATA);
+  const stores = PUNE_WARDS_AUDIT_DATA;
   const [selectedStore, setSelectedStore] = useState<StoreAuditRecord | null>(stores[0]);
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState<string>('');

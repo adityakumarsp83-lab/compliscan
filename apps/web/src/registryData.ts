@@ -49,6 +49,22 @@ export const NATIONAL_COMMODITY_REGISTRY: Record<string, ProductBenchmark> = {
     authorizedStandardMRP: 14.0,
     manufacturer: 'Nestle India Limited',
   },
+  '8901207045677': {
+    barcode: '8901207045677',
+    brandName: 'Dabur Almond Hair Oil',
+    standardNetQuantity: 45,
+    standardUnit: 'ml',
+    authorizedStandardMRP: 33.0,
+    manufacturer: 'Dabur India Ltd.',
+  },
+  '8901063093638': {
+    barcode: '8901063093638',
+    brandName: 'Britannia Good Day Butter Biscuit',
+    standardNetQuantity: 58.6,
+    standardUnit: 'g',
+    authorizedStandardMRP: 10.0,
+    manufacturer: 'Britannia Industries Ltd.',
+  },
 };
 
 export function evaluatePriceAndGrammageAnomalies(
@@ -56,6 +72,7 @@ export function evaluatePriceAndGrammageAnomalies(
   scannedMRP: number,
   scannedQty: number
 ): AnomalyVerdict | null {
+  if (scannedQty <= 0 || scannedMRP <= 0) return null;
   const benchmark = NATIONAL_COMMODITY_REGISTRY[barcode];
   if (!benchmark) return null;
 

@@ -1,0 +1,9 @@
+# PaddleOCR Microservice Requirements
+# Note: For macOS / Linux, Python 3.10-3.12 is recommended for PaddlePaddle compatibility.
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+opencv-python-headless>=4.8.0
+numpy>=1.23.0
