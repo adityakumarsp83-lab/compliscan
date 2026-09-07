@@ -14,13 +14,17 @@ import {
   AlertCircle,
   Sparkles,
   Zap,
+  Map,
+  ScanLine,
 } from 'lucide-react';
 import Tesseract from 'tesseract.js';
 import { MetricFiducialEngine, LegalMetrologyEngine } from './engine';
 import type { OCRBlock, ComplianceReport, RuleCheckResult } from './engine';
 import { generateImprovementNoticePDF } from './pdfGenerator';
+import { WardInspectionDashboard } from './WardMap';
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'SCANNER' | 'HEATMAP'>('SCANNER');
   const [barcodeWidthPx, setBarcodeWidthPx] = useState<number>(320);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -205,7 +209,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
-      {/* Header */}
+      {/* Top Application Header */}
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center pb-6 border-b border-slate-800 gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -214,232 +218,265 @@ export default function App() {
             <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2.5 py-1 rounded-full font-mono font-semibold">
               SIH26034 Prototype
             </span>
-            <span className="text-xs bg-indigo-500/20 text-indigo-300 px-2.5 py-1 rounded-full font-mono">
-              10 Statutory Declarations
-            </span>
           </div>
           <p className="text-slate-400 text-sm mt-1">
-            Automated Legal Metrology Compliance, In-Plane Optical Ruler & Arithmetic USP Engine
+            Automated Legal Metrology Compliance, In-Plane Optical Ruler & GIS Heatmap Platform
           </p>
         </div>
 
-        <button
-          onClick={handleLoadOfflineDemo}
-          className="bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 px-4 py-2 rounded-lg flex items-center gap-2 text-xs font-semibold transition"
-        >
-          <Sparkles className="w-4 h-4 text-indigo-400" /> Load Full 10-Declaration Demo
-        </button>
-      </header>
-
-      {errorMessage && (
-        <div className="max-w-7xl mx-auto mt-4 p-3.5 bg-rose-950/40 border border-rose-500/40 rounded-xl flex items-center justify-between gap-3 text-rose-300 text-xs">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{errorMessage}</span>
-          </div>
+        {/* View Switcher Tabs */}
+        <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 p-1 rounded-xl">
           <button
-            onClick={handleLoadOfflineDemo}
-            className="underline hover:text-rose-100 font-semibold"
+            onClick={() => setActiveTab('SCANNER')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeTab === 'SCANNER'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
           >
-            Switch to Offline Demo
+            <ScanLine className="w-4 h-4" /> Packaging Scanner
+          </button>
+          <button
+            onClick={() => setActiveTab('HEATMAP')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeTab === 'HEATMAP'
+                ? 'bg-indigo-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Map className="w-4 h-4" /> Ward Heatmap (GIS)
           </button>
         </div>
-      )}
+      </header>
 
-      {/* Main Grid */}
-      <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 mt-6">
-        {/* Left Column: Input & Optical Controls */}
-        <section className="lg:col-span-5 flex flex-col gap-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-base font-semibold flex items-center gap-2">
-                <Camera className="w-4 h-4 text-indigo-400" />
-                Packaging View & OCR Detection
-              </h2>
-              <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
-                <Upload className="w-3.5 h-3.5" /> Scan Real Package
-                <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-              </label>
-            </div>
-
-            <div className="relative w-full h-72 bg-slate-950 border border-slate-800 rounded-lg overflow-hidden flex items-center justify-center">
-              {isProcessing && (
-                <div className="absolute inset-0 bg-slate-950/85 z-10 flex flex-col items-center justify-center gap-3">
-                  <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
-                  <p className="text-xs font-mono text-slate-300 uppercase tracking-wide">
-                    {statusMessage}
-                  </p>
-                </div>
-              )}
-
-              {selectedImage ? (
-                <img src={selectedImage} alt="Package" className="absolute inset-0 w-full h-full object-contain" />
-              ) : (
-                <div className="text-center text-slate-500 text-xs p-6">
-                  <p className="font-semibold text-slate-400">No Image Uploaded</p>
-                  <p className="text-slate-600 mt-1">
-                    Click "Scan Real Package" or "Load Full 10-Declaration Demo" above.
-                  </p>
-                </div>
-              )}
-              <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-            </div>
-          </div>
-
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-base font-semibold flex items-center gap-2">
-                <Barcode className="w-4 h-4 text-emerald-400" />
-                In-Plane GS1 Fiducial Calibration
-              </h2>
-              <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono">
-                Nominal 37.29 mm
+      {/* Main Container */}
+      <main className="max-w-7xl mx-auto mt-6">
+        {activeTab === 'HEATMAP' ? (
+          <WardInspectionDashboard />
+        ) : (
+          <div className="flex flex-col gap-6">
+            {/* Quick Demo Trigger */}
+            <div className="flex justify-between items-center bg-slate-900/60 border border-slate-800 rounded-xl p-3.5">
+              <span className="text-xs text-slate-300">
+                Evaluating physical commodities against Rule 6 (10 declarations) and Rule 7 (font scale).
               </span>
+              <button
+                onClick={handleLoadOfflineDemo}
+                className="bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-200 px-3.5 py-1.5 rounded-lg flex items-center gap-2 text-xs font-semibold transition"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400" /> Load 10-Declaration Demo
+              </button>
             </div>
-            <div className="flex justify-between text-xs text-slate-300 mb-1">
-              <span>Detected Barcode Pixel Width:</span>
-              <span className="font-mono text-emerald-400 font-bold">{barcodeWidthPx} px</span>
-            </div>
-            <input
-              type="range"
-              min="180"
-              max="650"
-              value={barcodeWidthPx}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                setBarcodeWidthPx(val);
-                if (detectedBlocks.length > 0) executeAudit(detectedBlocks, val);
-              }}
-              className="w-full accent-emerald-400 cursor-pointer"
-            />
-            <div className="flex justify-between text-[11px] text-slate-500 mt-2 font-mono">
-              <span>Low-res (180px)</span>
-              <span>Scale: {scaleRatio > 0 ? scaleRatio.toFixed(2) : '--'} px/mm</span>
-              <span>High-res (650px)</span>
-            </div>
-          </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
-            <label className="text-xs font-mono text-slate-400 mb-2 block">
-              Extracted Packaging Tokens (Raw OCR):
-            </label>
-            <textarea
-              rows={6}
-              value={rawText}
-              placeholder="Extracted label text appears here..."
-              onChange={(e) => setRawText(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 leading-relaxed"
-            />
-            <button
-              onClick={handleManualReAudit}
-              className="w-full mt-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 px-4 rounded-lg flex items-center justify-center gap-2 text-xs transition"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Re-audit Extracted Tokens
-            </button>
-          </div>
-        </section>
-
-        {/* Right Column: 10 Statutory Declarations Verdict */}
-        <section className="lg:col-span-7">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-4 border-b border-slate-800 gap-3">
-              <div>
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <Scale className="w-5 h-5 text-amber-400" />
-                  Statutory 10-Declaration Checklist
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Legal Metrology (Packaged Commodities) Rules, 2011
-                </p>
-              </div>
-
-              {report && (
+            {errorMessage && (
+              <div className="p-3.5 bg-rose-950/40 border border-rose-500/40 rounded-xl flex items-center justify-between gap-3 text-rose-300 text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono px-3 py-1.5 bg-slate-800 rounded-lg border border-slate-700">
-                    Score: <strong className="text-emerald-400">{report.score}</strong>
-                  </span>
-                  <button
-                    onClick={handleDownloadNotice}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs transition shadow-sm"
-                  >
-                    <FileDown className="w-4 h-4" /> Download Notice (PDF)
-                  </button>
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{errorMessage}</span>
                 </div>
-              )}
-            </div>
-
-            {!report ? (
-              <div className="text-center py-28 text-slate-500 text-sm">
-                Upload a packaging photo or click{' '}
-                <strong className="text-slate-400">"Load Full 10-Declaration Demo"</strong> to review the
-                10-point statutory scorecard.
-              </div>
-            ) : (
-              <div className="mt-5 space-y-3.5">
-                {report.results.map((res: RuleCheckResult, i: number) => {
-                  const isCore = res.isCoreInnovation;
-                  return (
-                    <div
-                      key={i}
-                      className={`p-4 rounded-xl border transition-all ${
-                        isCore
-                          ? 'bg-indigo-950/25 border-indigo-500/50 shadow-sm ring-1 ring-indigo-500/20'
-                          : res.status === 'PASS'
-                          ? 'bg-slate-950/40 border-slate-800 text-slate-300'
-                          : res.status === 'WARNING'
-                          ? 'bg-amber-950/20 border-amber-500/30 text-amber-300'
-                          : 'bg-rose-950/20 border-rose-500/30 text-rose-300'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-3">
-                          {res.status === 'PASS' ? (
-                            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                          ) : res.status === 'WARNING' ? (
-                            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                          ) : (
-                            <XCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                          )}
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-semibold text-sm text-slate-100 font-mono">
-                                {res.ruleId}
-                              </span>
-                              <span className="text-xs text-slate-400 font-normal">
-                                • {res.description}
-                              </span>
-                              {isCore && (
-                                <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2 py-0.5 rounded-full">
-                                  <Zap className="w-3 h-3 text-indigo-400" />
-                                  {res.innovationBadge}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs mt-1.5 text-slate-300 font-sans leading-relaxed">
-                              {res.details}
-                            </p>
-                          </div>
-                        </div>
-
-                        <span
-                          className={`text-xs px-2.5 py-0.5 font-mono font-semibold rounded shrink-0 ${
-                            res.status === 'PASS'
-                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                              : res.status === 'WARNING'
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                          }`}
-                        >
-                          {res.status}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                <button
+                  onClick={handleLoadOfflineDemo}
+                  className="underline hover:text-rose-100 font-semibold"
+                >
+                  Switch to Offline Demo
+                </button>
               </div>
             )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              {/* Left Column: Image Canvas & Fiducial Controls */}
+              <section className="lg:col-span-5 flex flex-col gap-6">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+                  <div className="flex justify-between items-center mb-3">
+                    <h2 className="text-base font-semibold flex items-center gap-2">
+                      <Camera className="w-4 h-4 text-indigo-400" />
+                      Packaging View & OCR Detection
+                    </h2>
+                    <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+                      <Upload className="w-3.5 h-3.5" /> Scan Real Package
+                      <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                    </label>
+                  </div>
+
+                  <div className="relative w-full h-72 bg-slate-950 border border-slate-800 rounded-lg overflow-hidden flex items-center justify-center">
+                    {isProcessing && (
+                      <div className="absolute inset-0 bg-slate-950/85 z-10 flex flex-col items-center justify-center gap-3">
+                        <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
+                        <p className="text-xs font-mono text-slate-300 uppercase tracking-wide">
+                          {statusMessage}
+                        </p>
+                      </div>
+                    )}
+
+                    {selectedImage ? (
+                      <img src={selectedImage} alt="Package" className="absolute inset-0 w-full h-full object-contain" />
+                    ) : (
+                      <div className="text-center text-slate-500 text-xs p-6">
+                        <p className="font-semibold text-slate-400">No Image Uploaded</p>
+                        <p className="text-slate-600 mt-1">Click "Scan Real Package" or "Load 10-Declaration Demo".</p>
+                      </div>
+                    )}
+                    <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-base font-semibold flex items-center gap-2">
+                      <Barcode className="w-4 h-4 text-emerald-400" />
+                      In-Plane GS1 Fiducial Calibration
+                    </h2>
+                    <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono">
+                      Nominal 37.29 mm
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-xs text-slate-300 mb-1">
+                    <span>Detected Barcode Pixel Width:</span>
+                    <span className="font-mono text-emerald-400 font-bold">{barcodeWidthPx} px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="180"
+                    max="650"
+                    value={barcodeWidthPx}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setBarcodeWidthPx(val);
+                      if (detectedBlocks.length > 0) executeAudit(detectedBlocks, val);
+                    }}
+                    className="w-full accent-emerald-400 cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[11px] text-slate-500 mt-2 font-mono">
+                    <span>Low-res (180px)</span>
+                    <span>Scale: {scaleRatio > 0 ? scaleRatio.toFixed(2) : '--'} px/mm</span>
+                    <span>High-res (650px)</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm">
+                  <label className="text-xs font-mono text-slate-400 mb-2 block">
+                    Extracted Packaging Tokens (Raw OCR):
+                  </label>
+                  <textarea
+                    rows={5}
+                    value={rawText}
+                    placeholder="Extracted label text appears here..."
+                    onChange={(e) => setRawText(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-indigo-500 leading-relaxed"
+                  />
+                  <button
+                    onClick={handleManualReAudit}
+                    className="w-full mt-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2 px-4 rounded-lg flex items-center justify-center gap-2 text-xs transition"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> Re-audit Extracted Tokens
+                  </button>
+                </div>
+              </section>
+
+              {/* Right Column: 10-Declaration Checklist Verdict */}
+              <section className="lg:col-span-7">
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-4 border-b border-slate-800 gap-3">
+                    <div>
+                      <h2 className="text-lg font-semibold flex items-center gap-2">
+                        <Scale className="w-5 h-5 text-amber-400" />
+                        Statutory 10-Declaration Checklist
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Legal Metrology (Packaged Commodities) Rules, 2011
+                      </p>
+                    </div>
+
+                    {report && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono px-3 py-1.5 bg-slate-800 rounded-lg border border-slate-700">
+                          Score: <strong className="text-emerald-400">{report.score}</strong>
+                        </span>
+                        <button
+                          onClick={handleDownloadNotice}
+                          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs transition shadow-sm"
+                        >
+                          <FileDown className="w-4 h-4" /> Download Notice (PDF)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {!report ? (
+                    <div className="text-center py-28 text-slate-500 text-sm">
+                      Upload a packaging photo or click{' '}
+                      <strong className="text-slate-400">"Load 10-Declaration Demo"</strong> to review the
+                      statutory scorecard.
+                    </div>
+                  ) : (
+                    <div className="mt-5 space-y-3.5">
+                      {report.results.map((res: RuleCheckResult, i: number) => {
+                        const isCore = res.isCoreInnovation;
+                        return (
+                          <div
+                            key={i}
+                            className={`p-4 rounded-xl border transition-all ${
+                              isCore
+                                ? 'bg-indigo-950/25 border-indigo-500/50 shadow-sm ring-1 ring-indigo-500/20'
+                                : res.status === 'PASS'
+                                ? 'bg-slate-950/40 border-slate-800 text-slate-300'
+                                : res.status === 'WARNING'
+                                ? 'bg-amber-950/20 border-amber-500/30 text-amber-300'
+                                : 'bg-rose-950/20 border-rose-500/30 text-rose-300'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-3">
+                                {res.status === 'PASS' ? (
+                                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                                ) : res.status === 'WARNING' ? (
+                                  <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                                ) : (
+                                  <XCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                                )}
+                                <div>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-semibold text-sm text-slate-100 font-mono">
+                                      {res.ruleId}
+                                    </span>
+                                    <span className="text-xs text-slate-400 font-normal">
+                                      • {res.description}
+                                    </span>
+                                    {isCore && (
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2 py-0.5 rounded-full">
+                                        <Zap className="w-3 h-3 text-indigo-400" />
+                                        {res.innovationBadge}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs mt-1.5 text-slate-300 font-sans leading-relaxed">
+                                    {res.details}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <span
+                                className={`text-xs px-2.5 py-0.5 font-mono font-semibold rounded shrink-0 ${
+                                  res.status === 'PASS'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : res.status === 'WARNING'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                }`}
+                              >
+                                {res.status}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
           </div>
-        </section>
+        )}
       </main>
     </div>
   );
