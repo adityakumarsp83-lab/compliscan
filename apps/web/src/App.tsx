@@ -35,6 +35,7 @@ import Tesseract from 'tesseract.js';
 import { MetricFiducialEngine, LegalMetrologyEngine } from './engine';
 import type { OCRBlock, ComplianceReport, RuleCheckResult } from './engine';
 import { generateImprovementNoticePDF } from './pdfGenerator';
+import { hashImage, createEvidenceManifest, surfaceForImage } from './imageEvidence';
 import { WardInspectionDashboard } from './WardMap';
 import {
   NATIONAL_COMMODITY_REGISTRY,
@@ -57,6 +58,9 @@ import { v4 as uuidv4 } from './uuid-shim';
 type ActiveTab = 'SCANNER' | 'HISTORY' | 'HEATMAP';
 
 interface ImageEntry {
+  sha256: string;
+  surface: string;
+  scans: TaggedScan[];
   file: File;
   url: string;
   thumbnail: string;
@@ -121,10 +125,14 @@ function AppShell() {
 
       // Draw bounding boxes on active image canvas
       if (allImages.length > 0) {
-        drawBoundingBoxes(mergedBlocks, allImages[0].url);
+        drawBoundingBoxes(mergedBlocks, allImages[0].url, 0);
       }
 
       const auditReport = LegalMetrologyEngine.audit(mergedTokens, calibration);
+      auditReport.evidence = await createEvidenceManifest(allImages.map((image, imageIndex) => ({
+        imageIndex, fileName: image.file.name, surface: image.surface, sha256: image.sha256,
+      })));
+      setCopiedHash(false);
 
       // 2nd Schedule: inject result into the placeholder
       if (mergedTokens.genericName && mergedTokens.netQuantity) {
@@ -137,17 +145,19 @@ function AppShell() {
         if (scheduleIdx >= 0) {
           auditReport.results[scheduleIdx].status = packResult.status === 'PASS' ? 'PASS' : packResult.status === 'FAIL' ? 'FAIL' : 'WARNING';
           auditReport.results[scheduleIdx].details = packResult.message;
-          if (packResult.status === 'PASS') {
-            auditReport.totalPassed += 1;
-            auditReport.score = `${auditReport.totalPassed}/${auditReport.totalRules}`;
+          if (mergedTokens.conflicts?.some((conflict) => conflict.field === 'netQuantity')) {
+            auditReport.results[scheduleIdx].status = 'WARNING';
+            auditReport.results[scheduleIdx].details = 'Conflicting net quantities across surfaces; review before checking pack size.';
           }
+          auditReport.totalPassed = auditReport.results.filter((result) => result.status === 'PASS').length;
+          auditReport.score = `${auditReport.totalPassed}/${auditReport.totalRules}`;
         }
       }
 
       setReport(auditReport);
 
       // Anomaly (price/grammage) detection
-      if (mergedTokens.mrp && mergedTokens.netQuantity) {
+      if (mergedTokens.mrp && mergedTokens.netQuantity && !mergedTokens.conflicts?.length) {
         const anomaly = evaluatePriceAndGrammageAnomalies(
           barcodeStr,
           mergedTokens.mrp.value,
@@ -190,27 +200,41 @@ function AppShell() {
   );
 
   const processImages = async (files: File[]) => {
-    if (files.length === 0) return;
+    if (files.length === 0 || isProcessing || forceGeminiLoading) return;
 
     setIsProcessing(true);
     setErrorMessage(null);
     setReport(null);
     setGeminiUsed(false);
+    setCopiedHash(false);
 
     // Initialize image entries
-    const initialEntries: ImageEntry[] = await Promise.all(
-      files.map(async (file) => {
-        const url = URL.createObjectURL(file);
-        const thumbnail = await generateThumbnail(file).catch(() => '');
-        return { file, url, thumbnail, status: 'pending' as const, confidence: 0, rawText: '', blocks: [] };
-      })
-    );
+    const existingEntries = images;
+    let initialEntries: ImageEntry[];
+    try {
+      const addedEntries = await Promise.all(
+        files.slice(0, Math.max(0, 5 - existingEntries.length)).map(async (file, index) => {
+          const digest = await hashImage(file);
+          const thumbnail = await generateThumbnail(file).catch(() => '');
+          return {
+            file, url: URL.createObjectURL(file), thumbnail, sha256: digest,
+            surface: surfaceForImage(file.name, existingEntries.length + index), scans: [],
+            status: 'pending' as const, confidence: 0, rawText: '', blocks: [],
+          };
+        })
+      );
+      initialEntries = [...existingEntries, ...addedEntries];
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not hash original photographs');
+      setIsProcessing(false);
+      return;
+    }
     setImages(initialEntries);
     setActiveImageIdx(0);
 
-    const allScans: TaggedScan[] = [];
+    const allScans: TaggedScan[] = existingEntries.flatMap((entry) => entry.scans);
 
-    for (let i = 0; i < initialEntries.length; i++) {
+    for (let i = existingEntries.length; i < initialEntries.length; i++) {
       const entry = initialEntries[i];
       setStatusMessage(`Processing image ${i + 1}/${initialEntries.length}…`);
 
@@ -298,6 +322,7 @@ function AppShell() {
           blocks,
           source: 'tesseract',
           imageIndex: i,
+          surface: entry.surface,
           confidence,
         });
 
@@ -308,13 +333,15 @@ function AppShell() {
             blocks: [],
             source: 'gemini',
             imageIndex: i,
+            surface: entry.surface,
             confidence: 95, // Gemini is typically very high confidence
           });
         }
 
+        entry.scans = allScans.filter((scan) => scan.imageIndex === i);
         setImages((prev) =>
           prev.map((e, idx) =>
-            idx === i ? { ...e, status: 'done', confidence, rawText: combinedText, blocks } : e
+            idx === i ? { ...e, status: 'done', confidence, rawText: combinedText, blocks, scans: entry.scans } : e
           )
         );
       } catch (err) {
@@ -346,11 +373,11 @@ function AppShell() {
     setStatusMessage('');
   };
 
-  const handleFileDrop = useCallback(async (e: React.DragEvent) => {
+  const handleFileDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/')).slice(0, 5);
     if (files.length > 0) processImages(files);
-  }, [barcodeWidthPx, selectedBarcode]);
+  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).slice(0, 5);
@@ -407,12 +434,16 @@ function AppShell() {
     executeAudit([scan], barcodeWidthPx, currentBarcode, images);
   };
 
-  const handleDownloadNotice = () => {
+  const handleDownloadNotice = async () => {
     if (!report) return;
-    generateImprovementNoticePDF(report, images.map((i) => i.url), scaleRatio, rawText);
+    try {
+      await generateImprovementNoticePDF(report, images.map((i) => i.file), scaleRatio, rawText);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not embed photographs in PDF');
+    }
   };
 
-  const drawBoundingBoxes = (blocks: (OCRBlock & { imageIndex?: number })[], imgUrl: string) => {
+  const drawBoundingBoxes = (blocks: (OCRBlock & { imageIndex?: number })[], imgUrl: string, imageIndex: number = activeImageIdx) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -424,7 +455,7 @@ function AppShell() {
       canvas.height = img.naturalHeight || 400;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       const colors = ['#34d399', '#38bdf8', '#f59e0b', '#f472b6', '#a78bfa'];
-      blocks.forEach((b) => {
+      blocks.filter((b) => b.imageIndex === undefined || b.imageIndex === imageIndex).forEach((b) => {
         const color = colors[(b.imageIndex || 0) % colors.length];
         const isCore = /(MRP|USP|NET\s*QTY)/i.test(b.text);
         ctx.strokeStyle = isCore ? '#f59e0b' : color;
@@ -434,6 +465,21 @@ function AppShell() {
         ctx.fillRect(b.boundingBox.x, b.boundingBox.y, b.boundingBox.width, b.boundingBox.height);
       });
     };
+  };
+
+  const handleRemoveImage = async (index: number) => {
+    const remaining = images.filter((_, i) => i !== index).map((image, imageIndex) => ({
+      ...image, scans: image.scans.map((scan) => ({ ...scan, imageIndex })),
+    }));
+    URL.revokeObjectURL(images[index].url);
+    setImages(remaining);
+    setActiveImageIdx(0);
+    setReport(null);
+    const scans = remaining.flatMap((image) => image.scans);
+    setRawText(remaining.map((image) => image.rawText).join('\n\n--- Image Break ---\n\n'));
+    setDetectedBlocks(mergeBlocks(scans));
+    if (remaining.length) await executeAudit(scans, barcodeWidthPx, selectedBarcode, remaining);
+    else setAnomalyResult(null);
   };
 
   // Fallback seed records if history is initially empty
@@ -521,11 +567,16 @@ function AppShell() {
   const compliantScansCount = 118;
   const breachScansCount = 24;
 
-  const handleCopyChecksum = () => {
-    const checksum = 'e3b8c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78575855';
-    navigator.clipboard.writeText(checksum);
-    setCopiedHash(true);
-    setTimeout(() => setCopiedHash(false), 2000);
+  const handleCopyChecksum = async () => {
+    const checksum = report?.evidence?.checksum;
+    if (!checksum) return;
+    try {
+      await navigator.clipboard.writeText(checksum);
+      setCopiedHash(true);
+      setTimeout(() => setCopiedHash(false), 2000);
+    } catch {
+      setErrorMessage('Could not copy checksum to the clipboard');
+    }
   };
 
   const handleNewScan = () => {
@@ -905,7 +956,7 @@ function AppShell() {
                             try {
                               const { geminiBatchOcr } = await import('./apiClient');
                               const results = await geminiBatchOcr(images.map((img) => img.file));
-                              const allScans: TaggedScan[] = [];
+                              const allScans: TaggedScan[] = images.flatMap((image) => image.scans);
                               for (const r of results) {
                                 if (r.success && r.data) {
                                   const geminiToks = geminiResultToTokens(r.data);
@@ -915,15 +966,23 @@ function AppShell() {
                                       text: line.trim(),
                                       boundingBox: { x: 30, y: 35 + idx * 22, width: 300, height: 16 },
                                     }));
-                                  allScans.push({ tokens: geminiToks, blocks: rawBlocks, source: 'gemini', imageIndex: r.imageIndex, confidence: 95 });
+                                  // Replace only this image's previous Gemini extraction; keep other surfaces.
+                                  for (let i = allScans.length - 1; i >= 0; i--) {
+                                    if (allScans[i].imageIndex === r.imageIndex && allScans[i].source === 'gemini') allScans.splice(i, 1);
+                                  }
+                                  allScans.push({ tokens: geminiToks, blocks: rawBlocks, source: 'gemini', imageIndex: r.imageIndex, surface: images[r.imageIndex].surface, confidence: 95 });
                                 }
                               }
                               if (allScans.length > 0) {
+                                const updatedImages = images.map((image, imageIndex) => ({
+                                  ...image, scans: allScans.filter((scan) => scan.imageIndex === imageIndex),
+                                }));
+                                setImages(updatedImages);
                                 setGeminiUsed(true);
                                 const combinedRaw = allScans.map((s) => s.blocks.map((b) => b.text).join('\n')).join('\n');
                                 setRawText(combinedRaw);
                                 setDetectedBlocks(allScans.flatMap((s) => s.blocks));
-                                await executeAudit(allScans, barcodeWidthPx, selectedBarcode, images);
+                                await executeAudit(allScans, barcodeWidthPx, selectedBarcode, updatedImages);
                               }
                             } catch (err) {
                               console.error('Force Gemini failed:', err);
@@ -993,7 +1052,10 @@ function AppShell() {
                       {images.map((img, idx) => (
                         <div
                           key={idx}
-                          onClick={() => setActiveImageIdx(idx)}
+                          onClick={() => {
+                            setActiveImageIdx(idx);
+                            drawBoundingBoxes(mergeBlocks(images.flatMap((image) => image.scans)), img.url, idx);
+                          }}
                           className={`relative shrink-0 w-14 h-14 rounded-xl overflow-hidden border-2 cursor-pointer transition ${
                             activeImageIdx === idx ? 'border-blue-600 shadow-sm' : 'border-slate-300'
                           }`}
@@ -1007,8 +1069,7 @@ function AppShell() {
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              setImages((prev) => prev.filter((_, i) => i !== idx));
-                              if (activeImageIdx >= idx) setActiveImageIdx(Math.max(0, idx - 1));
+                              if (!isProcessing && !forceGeminiLoading) void handleRemoveImage(idx);
                             }}
                             className="absolute top-0.5 right-0.5 w-4 h-4 bg-rose-500 rounded-full flex items-center justify-center text-white"
                           >
@@ -1048,7 +1109,8 @@ function AppShell() {
                       setSelectedBarcode(val);
                       if (detectedBlocks.length > 0) {
                         const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(detectedBlocks), blocks: detectedBlocks, source: 'tesseract', imageIndex: 0, confidence: 80 };
-                        executeAudit([scan], barcodeWidthPx, val, images);
+                        const surfaceScans = images.flatMap((image) => image.scans);
+                        executeAudit(surfaceScans.length ? surfaceScans : [scan], barcodeWidthPx, val, images);
                       }
                     }}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-500 mb-3"
@@ -1075,7 +1137,8 @@ function AppShell() {
                       setBarcodeWidthPx(val);
                       if (detectedBlocks.length > 0) {
                         const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(detectedBlocks), blocks: detectedBlocks, source: 'tesseract', imageIndex: 0, confidence: 80 };
-                        executeAudit([scan], val, selectedBarcode, images);
+                        const surfaceScans = images.flatMap((image) => image.scans);
+                        executeAudit(surfaceScans.length ? surfaceScans : [scan], val, selectedBarcode, images);
                       }
                     }}
                     className="w-full accent-blue-600 cursor-pointer"
@@ -1335,6 +1398,7 @@ function AppShell() {
                           <span>EVIDENCE SHA-256 CHECKSUM</span>
                           <button
                             onClick={handleCopyChecksum}
+                            disabled={!report.evidence?.checksum}
                             className="text-blue-400 hover:text-blue-300 flex items-center gap-1 text-[10px] font-semibold"
                           >
                             {copiedHash ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -1342,7 +1406,7 @@ function AppShell() {
                           </button>
                         </div>
                         <p className="text-[11px] font-mono text-emerald-400 break-all leading-tight">
-                          e3b8c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78575855
+                          {report.evidence?.checksum || 'No original image evidence for this audit'}
                         </p>
                       </div>
                     </div>

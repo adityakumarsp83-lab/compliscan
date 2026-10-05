@@ -1,14 +1,45 @@
 import { jsPDF } from 'jspdf';
 import type { ComplianceReport } from './engine';
+import { blobToDataURL } from './imageEvidence';
+
+// Standard PDF fonts do not encode the rupee sign or typographic dashes correctly.
+const pdfText = (text: string) => text.replace(/₹/g, 'Rs. ').replace(/[—–]/g, '-');
 
 // ── PDF Report Generation ────────────────────────────────────────────────────
 
-export function generateImprovementNoticePDF(
+export async function createImprovementNoticePDF(
   report: ComplianceReport,
-  imageDataUrls: string[],
+  images: (Blob | string)[],
   scaleRatio: number,
   _rawText: string
 ) {
+  const imageDataUrls = await Promise.all(images.map(async (image) => {
+    if (image instanceof Blob) return blobToDataURL(image);
+    if (image.startsWith('data:image/')) return image;
+    const response = await fetch(image);
+    if (!response.ok) throw new Error('Could not load photograph for PDF');
+    return blobToDataURL(await response.blob());
+  }));
+  // Normalize browser-supported image formats (including WebP) for reliable jsPDF embedding.
+  const preparedImages = await Promise.all(imageDataUrls.map(async (url) => {
+    if (/^data:image\/(png|jpeg);/i.test(url)) return url;
+    return new Promise<string>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) { reject(new Error('Could not prepare photograph for PDF')); return; }
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0);
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
+      };
+      image.onerror = () => reject(new Error('Unsupported photograph format for PDF'));
+      image.src = url;
+    });
+  }));
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const noticeId = `IN-2026-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -67,7 +98,7 @@ export function generateImprovementNoticePDF(
   doc.text('1. Photographic Evidence', 14, currentY);
   currentY += 4;
 
-  const validImages = imageDataUrls.filter((url) => url && url.startsWith('http'));
+  const validImages = preparedImages;
   if (validImages.length > 0) {
     const cols = Math.min(validImages.length, 3);
     const imgW = (pageWidth - 28 - (cols - 1) * 3) / cols;
@@ -77,14 +108,16 @@ export function generateImprovementNoticePDF(
       const row = Math.floor(idx / cols);
       const x = 14 + col * (imgW + 3);
       const y = currentY + row * (imgH + 3);
-      try {
-        doc.addImage(url, 'JPEG', x, y, imgW, imgH, undefined, 'FAST');
+        const properties = doc.getImageProperties(url);
+        const scale = Math.min(imgW / properties.width, imgH / properties.height);
+        const renderedW = properties.width * scale;
+        const renderedH = properties.height * scale;
+        doc.addImage(url, properties.fileType, x + (imgW - renderedW) / 2, y + (imgH - renderedH) / 2, renderedW, renderedH, undefined, 'FAST');
         doc.setDrawColor(148, 163, 184);
         doc.rect(x, y, imgW, imgH);
         doc.setFontSize(6);
         doc.setTextColor(100, 116, 139);
         doc.text(`Photo ${idx + 1}`, x + 1, y + imgH - 1);
-      } catch { /* skip bad image */ }
     });
     const rows = Math.ceil(Math.min(validImages.length, 6) / cols);
     currentY += rows * (imgH + 3) + 5;
@@ -117,28 +150,31 @@ export function generateImprovementNoticePDF(
   currentY += 7;
 
   report.results.forEach((item) => {
-    if (currentY > 265) {
+    const descriptionLines = doc.splitTextToSize(pdfText(item.description), 69);
+    const findingLines = doc.splitTextToSize(pdfText(item.details), pageWidth - 155);
+    const rowHeight = Math.max(6.5, Math.max(descriptionLines.length, findingLines.length) * 3 + 2);
+    if (currentY + rowHeight > 275) {
       doc.addPage();
       currentY = 20;
     }
     const isPass = item.status === 'PASS';
     const isWarn = item.status === 'WARNING';
     doc.setFillColor(isPass ? 240 : isWarn ? 254 : 254, isPass ? 253 : isWarn ? 243 : 242, isPass ? 244 : isWarn ? 199 : 242);
-    doc.rect(14, currentY, pageWidth - 28, 6.5, 'F');
-    doc.rect(14, currentY, pageWidth - 28, 6.5, 'S');
+    doc.rect(14, currentY, pageWidth - 28, rowHeight, 'F');
+    doc.rect(14, currentY, pageWidth - 28, rowHeight, 'S');
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.5);
     doc.setTextColor(30, 41, 59);
     doc.text(item.ruleId.slice(0, 16), 17, currentY + 4.3);
     doc.setFont('helvetica', 'normal');
-    doc.text(item.description.slice(0, 32), 45, currentY + 4.3);
+    doc.text(descriptionLines, 45, currentY + 4.3);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(isPass ? 22 : isWarn ? 146 : 225, isPass ? 101 : isWarn ? 64 : 29, isPass ? 52 : isWarn ? 14 : 72);
     doc.text(item.status, 118, currentY + 4.3);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(30, 41, 59);
-    doc.text(item.details.slice(0, 36), 138, currentY + 4.3);
-    currentY += 6.5;
+    doc.text(findingLines, 138, currentY + 4.3);
+    currentY += rowHeight;
   });
 
   // 5. Statutory directive box
@@ -156,7 +192,7 @@ export function generateImprovementNoticePDF(
   doc.setFontSize(7.5);
   doc.setTextColor(120, 53, 15);
   const directive = 'Procedural labeling contraventions under Rules 6 & 7 of the Legal Metrology (Packaged Commodities) Rules, 2011 are subject to a mandatory 21-DAY IMPROVEMENT PERIOD. The manufacturer/packer is directed to rectify all highlighted non-compliances or show cause within 21 days. Failure to rectify shall trigger administrative penalty under Section 36 (Fine: up to ₹4,000).';
-  doc.text(doc.splitTextToSize(directive, pageWidth - 36), 18, currentY + 12);
+  doc.text(doc.splitTextToSize(pdfText(directive), pageWidth - 36), 18, currentY + 12);
 
   // 6. Footer
   currentY += 36;
@@ -166,7 +202,40 @@ export function generateImprovementNoticePDF(
   doc.text('Digitally authenticated by CompliScan Field Enforcement Suite v2.0 | SIH-26034', 14, currentY);
   doc.text('[Seal of Legal Metrology Officer]', pageWidth - 60, currentY);
 
-  doc.save(`CompliScan_Notice_${noticeId}.pdf`);
+  if (report.evidence) {
+    doc.addPage();
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.text('Original Image Evidence - SHA-256', 14, 20);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text('Hashes identify original uploaded bytes, before OCR or image enhancement.', 14, 28);
+    doc.text(report.evidence.images.length === 1 ? 'Original image checksum:' : 'Ordered multi-image manifest checksum:', 14, 36);
+    doc.setFont('courier', 'normal');
+    doc.text(report.evidence.checksum, 14, 42);
+    let evidenceY = 55;
+    for (const image of report.evidence.images) {
+      if (evidenceY > 255) { doc.addPage(); evidenceY = 20; }
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Photo ${image.imageIndex + 1} - ${image.surface}`, 14, evidenceY);
+      doc.setFont('helvetica', 'normal');
+      const fileLines = doc.splitTextToSize(image.fileName, pageWidth - 28);
+      doc.text(fileLines, 14, evidenceY + 5);
+      evidenceY += fileLines.length * 4 + 8;
+      doc.setFont('courier', 'normal');
+      doc.text(image.sha256, 14, evidenceY);
+      evidenceY += 14;
+    }
+  }
+  return { doc, fileName: `CompliScan_Notice_${noticeId}.pdf` };
+}
+
+export async function generateImprovementNoticePDF(
+  report: ComplianceReport, images: (Blob | string)[], scaleRatio: number, rawText: string
+) {
+  const { doc, fileName } = await createImprovementNoticePDF(report, images, scaleRatio, rawText);
+  doc.save(fileName);
 }
 
 // ── JSON Export ───────────────────────────────────────────────────────────────
@@ -174,6 +243,7 @@ export function generateImprovementNoticePDF(
 export function exportReportAsJSON(report: ComplianceReport): void {
   const exportData = {
     exportedAt: new Date().toISOString(),
+    evidence: report.evidence,
     complianceSummary: {
       score: report.score,
       totalPassed: report.totalPassed,

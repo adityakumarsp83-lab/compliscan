@@ -17,6 +17,8 @@ export interface MetricCalibration {
 }
 
 export interface ParsedTokens {
+  fieldEvidence?: Record<string, { imageIndex: number; surface: string; source: string; confidence: number; rawText: string }[]>;
+  conflicts?: { field: 'mrp' | 'netQuantity' | 'usp'; details: string }[];
   // Core 10 statutory tokens
   manufacturerDetails?: { rawText: string; detectedName: string };
   genericName?: { rawText: string };
@@ -50,6 +52,7 @@ export interface RuleCheckResult {
 }
 
 export interface ComplianceReport {
+  evidence?: import('./imageEvidence').EvidenceManifest;
   timestamp: string;
   score: string;
   totalPassed: number;
@@ -81,9 +84,9 @@ export class LegalMetrologyEngine {
 
   /** Rule 2(m): exact MRP declaration format — matches both 'MRP ₹ (incl. of all taxes) 10' and 'MRP ₹ 10 incl. of all taxes' */
   private static MRP_FORMAT_REGEX =
-    /(?:Maximum\s*Retail\s*Price|MRP|M\.R\.P\.?)\s*(?:Rs\.?|₹)?\s*(?:\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?\s*)?[\d,]+(?:\.\d{2})?\s*(?:\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?)?/i;
+    /(?:Maximum\s*Retail\s*Price|MRP|M\.R\.P\.?)\s*[:.]?\s*(?:(?:Rs\.?|₹)?\s*\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?\s*(?:Rs\.?|₹)?\s*[\d,]+(?:\.\d+)?|(?:Rs\.?|₹)?\s*[\d,]+(?:\.\d+)?\s*\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?)/i;
   private static MRP_VALUE_REGEX =
-    /(?:MRP|M\.R\.P\.?|Maximum\s*Retail\s*Price)\s*(?:Rs\.?|₹)?\s*(?:\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?\s*)?([\d,]+\.?\d*)/i;
+    /(?:MRP|M\.R\.P\.?|Maximum\s*Retail\s*Price)\s*[:.]?\s*(?:Rs\.?|₹)?\s*(?:\(?\s*incl(?:usive)?\.?\s*of\s*all\s*taxes\s*\)?\s*)?(?:Rs\.?|₹)?\s*([\d,]+\.?\d*)/i;
 
   private static NET_QTY_REGEX =
     /(?:NET\s*(?:QTY|WT|WEIGHT|QUANTITY|CONTENTS?)|NET)\s*[:.]?\s*(\d+\.?\d*)\s*(g|gm|gms|kg|ml|l|ltr|litres?|units?|pieces?|pcs|N\b)/i;
@@ -192,19 +195,7 @@ export class LegalMetrologyEngine {
       }
     }
 
-    // Mathematical deduction fallback: If Net Quantity was obscured/missing but MRP and USP are available,
-    // calculate Qty = MRP / USP (e.g. ₹10.00 / ₹0.17/g = 58.8g)
-    if ((!tokens.netQuantity || tokens.netQuantity.value <= 0) && tokens.mrp && tokens.usp && tokens.usp.value > 0) {
-      const deducedQty = Math.round((tokens.mrp.value / tokens.usp.value) * 10) / 10;
-      if (deducedQty > 0) {
-        tokens.netQuantity = {
-          value: deducedQty,
-          unit: tokens.usp.unit || 'g',
-          rawText: `${deducedQty} ${tokens.usp.unit || 'g'} (Verified via USP ₹${tokens.usp.value}/${tokens.usp.unit || 'g'} and MRP ₹${tokens.mrp.value})`,
-          box: tokens.mrp.box || { x: 0, y: 0, width: 0, height: 0 },
-        };
-      }
-    }
+    // Quantity must be observed on a label; MRP / USP cannot prove a declaration exists.
 
     // Manufacturer (Rule 6(1)(a))
     const mfgMatch = fullText.match(this.MFG_NAME_REGEX);
@@ -520,6 +511,18 @@ export class LegalMetrologyEngine {
       details: 'Standard pack size check requires commodity category detection — see 2nd Schedule validator',
       legalActSection: 'Rule 5 / Second Schedule — Standard Pack Quantities',
     });
+
+    for (const conflict of tokens.conflicts || []) {
+      const affectedRules = conflict.field === 'mrp'
+        ? ['Rule 6(1)(e)', 'Rule 2(m)', 'Rule 6(11)', 'Rule 7 Table I']
+        : conflict.field === 'netQuantity'
+        ? ['Rule 6(1)(c)', 'Rule 6(11)', 'Rule 7 Table I']
+        : ['Rule 6(11)'];
+      for (const result of results.filter((r) => affectedRules.includes(r.ruleId))) {
+        result.status = 'WARNING';
+        result.details = `Conflicting ${conflict.field} declarations: ${conflict.details}. Review the source images.`;
+      }
+    }
 
     const passedCount = results.filter((r) => r.status === 'PASS').length;
     return {

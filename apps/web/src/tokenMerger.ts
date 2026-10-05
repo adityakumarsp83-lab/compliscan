@@ -8,61 +8,83 @@ export interface TaggedScan {
   blocks: OCRBlock[];
   source: OCRSource;
   imageIndex: number;
+  surface?: string;
   confidence: number; // 0–100
 }
 
-/**
- * Merge ParsedTokens from multiple image scans (Tesseract + optional Gemini).
- *
- * Priority rules:
- *  1. Non-null value beats null
- *  2. Gemini result beats Tesseract for the same field (when both non-null)
- *  3. Higher confidence beats lower confidence for same-source conflicts
- */
+/** Harmonize declarations without discarding complementary fields or conflicting evidence. */
 export function mergeTokenSets(scans: TaggedScan[]): ParsedTokens {
-  const merged: ParsedTokens = {};
-
-  // Sort so Gemini sources are processed last (they win on conflict)
-  const sorted = [...scans].sort((a, b) => {
-    if (a.source === b.source) return b.confidence - a.confidence;
-    return a.source === 'gemini' ? 1 : -1; // gemini last = highest priority
-  });
+  const merged: ParsedTokens = { fieldEvidence: {} };
+  // Preserve Gemini preference, but choose the highest confidence within each source.
+  const sorted = [...scans].sort((a, b) =>
+    a.source === b.source ? b.confidence - a.confidence : a.source === 'gemini' ? -1 : 1
+  );
+  const fields = ['manufacturerDetails', 'genericName', 'netQuantity', 'mfgDate', 'expDate',
+    'mrp', 'countryOfOrigin', 'usp', 'fssaiLicense', 'pinCode', 'consumerCareName'] as const;
 
   for (const scan of sorted) {
-    const t = scan.tokens;
-
-    if (t.manufacturerDetails && !merged.manufacturerDetails) merged.manufacturerDetails = t.manufacturerDetails;
-    else if (t.manufacturerDetails && scan.source === 'gemini') merged.manufacturerDetails = t.manufacturerDetails;
-
-    if (t.genericName && !merged.genericName) merged.genericName = t.genericName;
-    else if (t.genericName && scan.source === 'gemini') merged.genericName = t.genericName;
-
-    if (t.netQuantity && !merged.netQuantity) merged.netQuantity = t.netQuantity;
-    else if (t.netQuantity && scan.source === 'gemini') merged.netQuantity = t.netQuantity;
-
-    if (t.mfgDate && !merged.mfgDate) merged.mfgDate = t.mfgDate;
-    if (t.expDate && !merged.expDate) merged.expDate = t.expDate;
-
-    if (t.mrp && !merged.mrp) merged.mrp = t.mrp;
-    else if (t.mrp && scan.source === 'gemini') merged.mrp = t.mrp;
-
-    if (t.countryOfOrigin && !merged.countryOfOrigin) merged.countryOfOrigin = t.countryOfOrigin;
-    if (t.consumerCare && !merged.consumerCare) merged.consumerCare = t.consumerCare;
-    else if (t.consumerCare && scan.source === 'gemini') merged.consumerCare = t.consumerCare;
-
-    if (t.usp && !merged.usp) merged.usp = t.usp;
-    if (t.fssaiLicense && !merged.fssaiLicense) merged.fssaiLicense = t.fssaiLicense;
-
-    // Extended fields from Gemini
-    if (t.pinCode && !merged.pinCode) merged.pinCode = t.pinCode;
-    if (t.mrpFormatValid !== undefined && merged.mrpFormatValid === undefined) merged.mrpFormatValid = t.mrpFormatValid;
-    if (t.stickerOverMrp !== undefined && merged.stickerOverMrp === undefined) merged.stickerOverMrp = t.stickerOverMrp;
-    if (t.prohibitedQualifiers && !merged.prohibitedQualifiers) merged.prohibitedQualifiers = t.prohibitedQualifiers;
-    if (t.nonSiUnits && !merged.nonSiUnits) merged.nonSiUnits = t.nonSiUnits;
-    if (t.languageUsed && !merged.languageUsed) merged.languageUsed = t.languageUsed;
-    if (t.consumerCareName && !merged.consumerCareName) merged.consumerCareName = t.consumerCareName;
+    for (const field of [...fields, 'consumerCare'] as const) {
+      const value = scan.tokens[field];
+      if (!value) continue;
+      (merged.fieldEvidence![field] ||= []).push({
+        imageIndex: scan.imageIndex,
+        surface: scan.surface || `Image ${scan.imageIndex + 1}`,
+        source: scan.source,
+        confidence: scan.confidence,
+        rawText: value.rawText,
+      });
+      if (field !== 'consumerCare' && merged[field] === undefined) {
+        Object.assign(merged, { [field]: value });
+      }
+    }
   }
 
+  // A phone on the crimp and email on the side belong to the same declaration record.
+  const care = sorted.flatMap((scan) => scan.tokens.consumerCare ? [scan.tokens.consumerCare] : []);
+  if (care.length) {
+    merged.consumerCare = {
+      rawText: [...new Set(care.map((value) => value.rawText))].join('\n'),
+      contactInfo: [...new Set(care.map((value) => value.contactInfo))].join(' '),
+    };
+  }
+  for (const field of ['prohibitedQualifiers', 'nonSiUnits', 'languageUsed'] as const) {
+    const values = sorted.flatMap((scan) => scan.tokens[field] || []);
+    if (sorted.some((scan) => scan.tokens[field] !== undefined)) merged[field] = [...new Set(values)];
+  }
+  if (sorted.some((scan) => scan.tokens.stickerOverMrp !== undefined)) {
+    merged.stickerOverMrp = sorted.some((scan) => scan.tokens.stickerOverMrp === true);
+  }
+  // Only accept tax wording associated with the selected MRP, not an unrelated surface's price.
+  if (merged.mrp) {
+    merged.mrpFormatValid = sorted.some((scan) =>
+      scan.tokens.mrp?.value === merged.mrp!.value && scan.tokens.mrpFormatValid === true
+    );
+  }
+
+  const conflicts: NonNullable<ParsedTokens['conflicts']> = [];
+  for (const field of ['mrp', 'netQuantity', 'usp'] as const) {
+    // Arbitration between engines on one image happens above. Compare distinct surfaces.
+    const candidates = new Map<number, { value: string; label: string }>();
+    for (const scan of sorted) {
+      const token = scan.tokens[field];
+      if (!token || candidates.has(scan.imageIndex)) continue;
+      let value = token.value;
+      let unit = 'unit' in token ? token.unit.toLowerCase() : 'INR';
+      const factor = unit === 'kg' || unit === 'l' ? 1000 : 1;
+      if (unit === 'kg') unit = 'g';
+      if (unit === 'l') unit = 'ml';
+      if (field === 'netQuantity') value *= factor;
+      if (field === 'usp') value /= factor;
+      candidates.set(scan.imageIndex, {
+        value: `${Number(value.toFixed(8))}:${unit}`,
+        label: `${scan.surface || `Image ${scan.imageIndex + 1}`}: ${token.rawText}`,
+      });
+    }
+    if (new Set([...candidates.values()].map((candidate) => candidate.value)).size > 1) {
+      conflicts.push({ field, details: [...candidates.values()].map((candidate) => candidate.label).join(' | ') });
+    }
+  }
+  if (conflicts.length) merged.conflicts = conflicts;
   return merged;
 }
 
