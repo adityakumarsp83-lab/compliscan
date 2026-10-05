@@ -58,10 +58,11 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   sessionStorage.removeItem('compliscan_jwt');
   sessionStorage.removeItem('compliscan_user');
+  localStorage.removeItem('compliscan_offline_user');
 }
 
 export function getStoredUser(): AuthUser | null {
-  const raw = sessionStorage.getItem('compliscan_user');
+  const raw = sessionStorage.getItem('compliscan_user') || localStorage.getItem('compliscan_offline_user');
   if (!raw) return null;
   try { return JSON.parse(raw) as AuthUser; } catch { return null; }
 }
@@ -87,6 +88,8 @@ export async function login(username: string, password: string): Promise<LoginRe
   const data = (await res.json()) as LoginResponse;
   setToken(data.token);
   sessionStorage.setItem('compliscan_user', JSON.stringify(data.user));
+  // Remember only the local inspector profile, never a persistent bearer token.
+  localStorage.setItem('compliscan_offline_user', JSON.stringify(data.user));
   return data;
 }
 
@@ -104,18 +107,21 @@ export async function signup(username: string, password: string, fullName: strin
   const data = (await res.json()) as LoginResponse;
   setToken(data.token);
   sessionStorage.setItem('compliscan_user', JSON.stringify(data.user));
+  // Remember only the local inspector profile, never a persistent bearer token.
+  localStorage.setItem('compliscan_offline_user', JSON.stringify(data.user));
   return data;
 }
 
 /** POST /api/auth/verify — validates token on app load */
 export async function verifyStoredToken(): Promise<AuthUser | null> {
   const token = getToken();
-  if (!token) return null;
+  if (!token || !navigator.onLine) return null;
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
+      signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) { clearToken(); return null; }
     const data = await res.json();

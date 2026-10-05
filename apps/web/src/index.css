@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -41,4 +39,17 @@ body {
 /* Range slider accent for calibration */
 input[type="range"] {
   accent-color: #0d9488;
+}
+
+/* Preserve the desktop layout while respecting phone safe areas and touch sizes. */
+body { padding-bottom: env(safe-area-inset-bottom); }
+.pwa-controls { padding-top: max(0.5rem, env(safe-area-inset-top)); }
+button, label { touch-action: manipulation; }
+@media (max-width: 640px) {
+  input:not([type="range"]):not([type="file"]), select, textarea { font-size: 16px !important; }
+  button { min-height: 44px; }
+  header h1 + span { display: none; }
+  main { padding-left: 12px !important; padding-right: 12px !important; }
+  main .shrink-0 { max-width: 100%; }
+  main .font-mono { overflow-wrap: anywhere; }
 }

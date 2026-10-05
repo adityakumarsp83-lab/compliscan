@@ -31,7 +31,8 @@ import {
   ChevronRight,
   CheckCircle,
 } from 'lucide-react';
-import Tesseract from 'tesseract.js';
+import { recognizeLocally } from './localOcr';
+import { PwaControls } from './PwaControls';
 import { MetricFiducialEngine, LegalMetrologyEngine } from './engine';
 import type { OCRBlock, ComplianceReport, RuleCheckResult } from './engine';
 import { generateImprovementNoticePDF } from './pdfGenerator';
@@ -46,7 +47,7 @@ import { enhanceImage, generateThumbnail } from './imagePreprocessor';
 import { mergeTokenSets, mergeBlocks, geminiResultToTokens } from './tokenMerger';
 import type { TaggedScan } from './tokenMerger';
 import { validatePackSize } from './secondSchedule';
-import { saveInspection, listInspections, deleteInspection } from './inspectionStore';
+import { saveInspection, listInspections, deleteInspection, getInspectionEvidence } from './inspectionStore';
 import type { StoredInspection } from './inspectionStore';
 import { geminiOcr, isBackendOnline, saveToBackendHistory } from './apiClient';
 import { AuthProvider, LoginPage, useAuth } from './authContext';
@@ -94,11 +95,20 @@ function AppShell() {
   const [historyFilter, setHistoryFilter] = useState<'ALL' | 'COMPLIANT' | 'VIOLATION'>('ALL');
   const [copiedHash, setCopiedHash] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [captureSurface, setCaptureSurface] = useState('Front');
+  const auditIdRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Check backend status on mount
   useEffect(() => {
-    isBackendOnline().then(setBackendOnline);
+    const check = () => {
+      if (!navigator.onLine) setBackendOnline(false);
+      else isBackendOnline().then(setBackendOnline);
+    };
+    check();
+    window.addEventListener('online', check);
+    window.addEventListener('offline', check);
+    return () => { window.removeEventListener('online', check); window.removeEventListener('offline', check); };
   }, []);
 
   // Load history when tab switches to HISTORY
@@ -172,7 +182,7 @@ function AppShell() {
       try {
         const thumbnail = allImages[0] ? allImages[0].thumbnail : '';
         const record: StoredInspection = {
-          id: uuidv4(),
+          id: auditIdRef.current ||= uuidv4(),
           timestamp: new Date().toISOString(),
           product_name: mergedTokens.genericName?.rawText || 'Unknown Product',
           barcode: barcodeStr,
@@ -187,13 +197,19 @@ function AppShell() {
           inspector_name: user?.name || 'Offline User',
           location: '',
         };
-        await saveInspection(record);
+        await saveInspection(record, {
+          barcodeWidthPx: barcodePx, scaleRatio: calibration.pixelsPerMm,
+          photos: allImages.map((image) => ({
+            blob: image.file, fileName: image.file.name, lastModified: image.file.lastModified,
+            surface: image.surface, sha256: image.sha256, thumbnail: image.thumbnail, scans: image.scans,
+          })),
+        });
         // Also sync to backend (non-blocking)
         if (backendOnline) {
           saveToBackendHistory(record).catch(() => {});
         }
       } catch {
-        // History save failure is non-critical
+        setErrorMessage("Audit completed, but local evidence could not be saved. Export the PDF now or free storage in History.");
       }
     },
     [user, backendOnline]
@@ -248,13 +264,13 @@ function AppShell() {
 
         // Step 2: Tesseract v5 LSTM (OEM 1 = LSTM only, most accurate)
         setStatusMessage(`Image ${i + 1}: Running OCR (Tesseract LSTM)…`);
-        const result = await Tesseract.recognize(enhanced, 'eng', {
-          logger: (m: { status: string; progress?: number }) => {
+        const result = await recognizeLocally(enhanced,
+          (m: { status: string; progress?: number }) => {
             if (m.status === 'recognizing text') {
               setStatusMessage(`Image ${i + 1}: OCR ${Math.round((m.progress || 0) * 100)}%`);
             }
-          },
-        });
+          }
+        );
 
         const confidence = result.data.confidence || 0;
         const extractedText = (result.data.text || '').trim();
@@ -288,7 +304,7 @@ function AppShell() {
         // Step 3: Smart Gemini fallback
         // Triggers if: low confidence OR few fields extracted OR critical fields (MRP/NetQty) are missing
         const criticalFieldsMissing = !tesseractTokens.mrp || !tesseractTokens.netQuantity;
-        const shouldUseGemini = (confidence < 80 || nonNullCount < 5 || criticalFieldsMissing) && backendOnline;
+        const shouldUseGemini = navigator.onLine && (confidence < 80 || nonNullCount < 5 || criticalFieldsMissing) && backendOnline;
         let geminiTokens = null;
         if (shouldUseGemini) {
           const reason = criticalFieldsMissing
@@ -339,6 +355,10 @@ function AppShell() {
         }
 
         entry.scans = allScans.filter((scan) => scan.imageIndex === i);
+        entry.confidence = confidence;
+        entry.rawText = combinedText;
+        entry.blocks = blocks;
+        entry.status = 'done';
         setImages((prev) =>
           prev.map((e, idx) =>
             idx === i ? { ...e, status: 'done', confidence, rawText: combinedText, blocks, scans: entry.scans } : e
@@ -346,6 +366,7 @@ function AppShell() {
         );
       } catch (err) {
         console.error(`Image ${i + 1} processing error:`, err);
+        setErrorMessage('Could not read a photograph locally. Try a clearer JPEG or PNG and confirm offline setup has finished.');
         setImages((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: 'error' } : e)));
       }
     }
@@ -368,7 +389,12 @@ function AppShell() {
     }
 
     // Run final merged audit
-    await executeAudit(allScans, barcodeWidthPx, matchedBarcode, initialEntries);
+    const completedEntries = initialEntries.map((entry, imageIndex) => ({
+      ...entry, scans: allScans.filter((scan) => scan.imageIndex === imageIndex),
+      status: allScans.some((scan) => scan.imageIndex === imageIndex) ? 'done' as const : 'error' as const,
+    }));
+    setImages(completedEntries);
+    await executeAudit(allScans, barcodeWidthPx, matchedBarcode, completedEntries);
     setIsProcessing(false);
     setStatusMessage('');
   };
@@ -386,6 +412,9 @@ function AppShell() {
   };
 
   const handleLoadOfflineDemo = (simulateViolation: boolean = false) => {
+    if (isProcessing || forceGeminiLoading) return;
+    images.forEach((image) => URL.revokeObjectURL(image.url));
+    auditIdRef.current = null;
     setErrorMessage(null);
     const sampleText = simulateViolation
       ? 'Kurkure Masala Munch (Extruded Snack)\nMfg by PepsiCo India Holdings Pvt Ltd, Village Channo, Sangrur, Punjab - 148026\nNet Wt: 130 g\nMFD: 08/2026\nBest Before 6 Months from Mfg\nMRP Rs. 45.00 incl. of all taxes\nUSP Rs. 0.35 per g\nMade in India\nConsumer Care: 1800 22 4020, feedback@pepsico.com\nFSSAI Lic No: 10014011001895'
@@ -479,7 +508,7 @@ function AppShell() {
     setRawText(remaining.map((image) => image.rawText).join('\n\n--- Image Break ---\n\n'));
     setDetectedBlocks(mergeBlocks(scans));
     if (remaining.length) await executeAudit(scans, barcodeWidthPx, selectedBarcode, remaining);
-    else setAnomalyResult(null);
+    else { setAnomalyResult(null); auditIdRef.current = null; }
   };
 
   // Fallback seed records if history is initially empty
@@ -580,6 +609,8 @@ function AppShell() {
   };
 
   const handleNewScan = () => {
+    images.forEach((image) => URL.revokeObjectURL(image.url));
+    auditIdRef.current = null;
     setImages([]);
     setReport(null);
     setRawText('');
@@ -588,15 +619,53 @@ function AppShell() {
     setErrorMessage(null);
   };
 
+  const reopenInspection = async (record: StoredInspection) => {
+    if (isProcessing || forceGeminiLoading) return;
+    setErrorMessage(null);
+    try {
+      const saved = await getInspectionEvidence(record.id);
+      const savedReport = JSON.parse(record.report_json) as ComplianceReport;
+      if (!Array.isArray(savedReport.results)) throw new Error('This demonstration history entry has no saved audit to reopen.');
+      const restored: ImageEntry[] = [];
+      for (const photo of saved?.photos || []) {
+        const file = new File([photo.blob], photo.fileName, { type: photo.blob.type, lastModified: photo.lastModified });
+        if (await hashImage(file) !== photo.sha256) throw new Error('Saved image does not match its evidence hash.');
+        restored.push({ file, url: '', sha256: photo.sha256, surface: photo.surface,
+          thumbnail: photo.thumbnail, scans: photo.scans, blocks: photo.scans.flatMap((scan) => scan.blocks),
+          rawText: photo.scans.flatMap((scan) => scan.blocks.map((block) => block.text)).join('\n'),
+          confidence: photo.scans[0]?.confidence || 0, status: 'done' });
+      }
+      const manifest = await createEvidenceManifest(restored.map((photo, imageIndex) => ({ imageIndex,
+        fileName: photo.file.name, surface: photo.surface, sha256: photo.sha256 })));
+      if (savedReport.evidence && manifest?.checksum !== savedReport.evidence.checksum) {
+        throw new Error('Original evidence is missing or does not match this report.');
+      }
+      images.forEach((image) => URL.revokeObjectURL(image.url));
+      restored.forEach((image) => { image.url = URL.createObjectURL(image.file); });
+      auditIdRef.current = record.id;
+      setImages(restored); setActiveImageIdx(0); setReport(savedReport); setRawText(record.raw_text);
+      setBarcodeWidthPx(saved?.barcodeWidthPx || 320); setScaleRatio(saved?.scaleRatio || 0);
+      setSelectedBarcode(record.barcode); setAnomalyResult(null); setCopiedHash(false);
+      setGeminiUsed(restored.some((image) => image.scans.some((scan) => scan.source === 'gemini')));
+      const blocks = mergeBlocks(restored.flatMap((image) => image.scans));
+      setDetectedBlocks(blocks); setActiveTab('SCANNER');
+      if (restored[0]) drawBoundingBoxes(blocks, restored[0].url, 0);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Could not reopen saved audit.');
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800 font-sans">
       {/* Official Government Blue Stripe */}
       <div className="h-1.5 bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-700" />
 
+      <PwaControls busy={isProcessing || forceGeminiLoading} />
+
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
               <ShieldCheck className="w-6 h-6" />
@@ -620,7 +689,7 @@ function AppShell() {
           </div>
 
           {/* Tab navigation */}
-          <nav className="flex items-center gap-1 bg-slate-100/90 border border-slate-200 p-1 rounded-xl">
+          <nav className="order-last w-full justify-center sm:order-none sm:w-auto flex items-center gap-1 bg-slate-100/90 border border-slate-200 p-1 rounded-xl">
             {([['SCANNER', ScanLine, 'Scanner'], ['HISTORY', History, 'History'], ['HEATMAP', Map, 'Heatmap']] as const).map(
               ([tab, Icon, label]) => (
                 <button
@@ -644,7 +713,7 @@ function AppShell() {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>{isOfflineMode ? 'OFFLINE CACHE' : 'ONLINE'}</span>
+              <span>{isOfflineMode || !navigator.onLine || backendOnline === false ? 'LOCAL MODE' : 'ONLINE'}</span>
             </div>
 
             <div className="hidden sm:flex items-center gap-2 pl-2 border-l border-slate-200">
@@ -678,6 +747,15 @@ function AppShell() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 md:px-8 py-6 space-y-6">
+            {errorMessage && (
+              <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center gap-3 text-rose-800 text-xs font-medium">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                <span>{errorMessage}</span>
+                <button onClick={() => setErrorMessage(null)} className="ml-auto p-1 text-rose-600 hover:text-rose-800">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
         {/* ── Top Officer Profile & Telemetry Bar ── */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
           {/* Inspector Badge Card */}
@@ -845,7 +923,7 @@ function AppShell() {
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
-                      <ChevronRight className="w-5 h-5 text-slate-300" />
+                      <button aria-label={`Open audit ${record.product_name}`} onClick={() => reopenInspection(record)} className="p-2 rounded-lg hover:bg-blue-50 text-blue-600"><ChevronRight className="w-5 h-5" /></button>
                     </div>
                   </div>
                 );
@@ -881,15 +959,7 @@ function AppShell() {
               </div>
             </div>
 
-            {errorMessage && (
-              <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center gap-3 text-rose-800 text-xs font-medium">
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                <span>{errorMessage}</span>
-                <button onClick={() => setErrorMessage(null)} className="ml-auto p-1 text-rose-600 hover:text-rose-800">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            )}
+
 
             {/* Hero Scan Product Card (When no images or report yet) */}
             {images.length === 0 && !report && (
@@ -946,7 +1016,7 @@ function AppShell() {
                     </h2>
 
                     <div className="flex items-center gap-2">
-                      {images.length > 0 && backendOnline && (
+                      {images.length > 0 && backendOnline && navigator.onLine && (
                         <button
                           id="btn-force-gemini"
                           onClick={async () => {
@@ -1013,6 +1083,24 @@ function AppShell() {
                         />
                       </label>
                     </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
+                    <label className="text-xs font-semibold text-slate-600" htmlFor="capture-surface">Surface</label>
+                    <select id="capture-surface" value={captureSurface} onChange={(event) => setCaptureSurface(event.target.value)} className="border border-slate-300 rounded-lg p-2 text-xs">
+                      {['Front', 'Side', 'Crimp', 'Back', 'Bottom', 'Cap'].map((surface) => <option key={surface}>{surface}</option>)}
+                    </select>
+                    <label className={`flex items-center gap-2 rounded-lg bg-blue-600 text-white p-2 text-xs font-bold ${isProcessing || images.length >= 5 ? 'opacity-50' : 'cursor-pointer'}`}>
+                      <Camera className="w-4 h-4" /> Capture {captureSurface}
+                      <input id="camera-capture" type="file" accept="image/*" capture="environment" className="hidden" disabled={isProcessing || forceGeminiLoading || images.length >= 5}
+                        onChange={(event) => {
+                          const photo = event.target.files?.[0];
+                          if (photo) { const extension = photo.name.includes('.') ? photo.name.split('.').pop() : 'jpg';
+                            processImages([new File([photo], `${captureSurface.toLowerCase()}-${Date.now()}.${extension}`, { type: photo.type, lastModified: photo.lastModified })]); }
+                          event.target.value = '';
+                        }} />
+                    </label>
+                    <span className="text-[10px] text-slate-500">Add one surface at a time, up to 5 photos.</span>
                   </div>
 
                   {/* Drop zone / Active Preview */}
@@ -1464,7 +1552,7 @@ function AuthGate() {
   }
 
   if (!user && !isOfflineMode) {
-    return <LoginPage />;
+    return <><PwaControls /><LoginPage /></>;
   }
 
   return <AppShell />;

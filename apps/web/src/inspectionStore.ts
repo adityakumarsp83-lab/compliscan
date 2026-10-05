@@ -1,4 +1,5 @@
-import { get, set, del, keys } from 'idb-keyval';
+import { get, delMany, createStore, promisifyRequest, keys } from 'idb-keyval';
+import type { TaggedScan } from './tokenMerger';
 
 export interface StoredInspection {
   id: string;
@@ -17,7 +18,28 @@ export interface StoredInspection {
   location: string;
 }
 
+export interface StoredPhoto {
+  blob: Blob;
+  fileName: string;
+  lastModified: number;
+  surface: string;
+  sha256: string;
+  thumbnail: string;
+  scans: TaggedScan[];
+}
+
+export interface StoredEvidence {
+  photos: StoredPhoto[];
+  barcodeWidthPx: number;
+  scaleRatio: number;
+}
+
+export async function getInspectionEvidence(id: string): Promise<StoredEvidence | null> {
+  return (await get<StoredEvidence>(`evidence:${id}`)) ?? null;
+}
+
 const INDEX_KEY = '__compliscan_index__';
+const inspectionStore = createStore('keyval-store', 'keyval');
 
 /** Get the ordered list of inspection IDs (newest first) */
 async function getIndex(): Promise<string[]> {
@@ -25,12 +47,20 @@ async function getIndex(): Promise<string[]> {
 }
 
 /** Save a completed inspection to IndexedDB */
-export async function saveInspection(record: StoredInspection): Promise<void> {
-  await set(`inspection:${record.id}`, record);
-  const index = await getIndex();
-  // Insert at front (newest first), deduplicate
-  const updated = [record.id, ...index.filter((id) => id !== record.id)];
-  await set(INDEX_KEY, updated);
+export async function saveInspection(record: StoredInspection, evidence?: StoredEvidence): Promise<void> {
+  await inspectionStore('readwrite', (store) => {
+    const completion = promisifyRequest(store.transaction);
+    const request = store.get(INDEX_KEY);
+    request.onsuccess = () => {
+      try {
+        const index: string[] = request.result || [];
+        store.put(record, `inspection:${record.id}`);
+        if (evidence) store.put(evidence, `evidence:${record.id}`);
+        store.put([record.id, ...index.filter((id) => id !== record.id)], INDEX_KEY);
+      } catch { store.transaction.abort(); }
+    };
+    return completion;
+  });
 }
 
 export interface ListOptions {
@@ -78,9 +108,17 @@ export async function getInspection(id: string): Promise<StoredInspection | null
 
 /** Delete an inspection by ID */
 export async function deleteInspection(id: string): Promise<void> {
-  await del(`inspection:${id}`);
-  const index = await getIndex();
-  await set(INDEX_KEY, index.filter((i) => i !== id));
+  await inspectionStore('readwrite', (store) => {
+    const completion = promisifyRequest(store.transaction);
+    const request = store.get(INDEX_KEY);
+    request.onsuccess = () => {
+      const index: string[] = request.result || [];
+      store.delete(`inspection:${id}`);
+      store.delete(`evidence:${id}`);
+      store.put(index.filter((item) => item !== id), INDEX_KEY);
+    };
+    return completion;
+  });
 }
 
 /** Get total count of inspections */
@@ -92,9 +130,6 @@ export async function countInspections(): Promise<number> {
 /** Clear all inspections */
 export async function clearAllInspections(): Promise<void> {
   const allKeys = await keys();
-  for (const key of allKeys) {
-    if (typeof key === 'string' && (key.startsWith('inspection:') || key === INDEX_KEY)) {
-      await del(key);
-    }
-  }
+  await delMany(allKeys.filter((key) => typeof key === 'string' &&
+    (key.startsWith('inspection:') || key.startsWith('evidence:') || key === INDEX_KEY)));
 }
