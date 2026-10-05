@@ -103,44 +103,54 @@ export function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-100 flex items-center justify-center p-6">
+      {/* Official Blue header stripe */}
+      <div className="fixed top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-fda-600 via-blue-600 to-fda-600" />
+
+      <div className="w-full max-w-md">
+        {/* Logo & Branding */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 mb-4">
-            <svg className="w-8 h-8 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-fda-600 shadow-lg shadow-fda-600/20 mb-5">
+            <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-slate-100">CompliScan</h1>
-          <p className="text-sm text-slate-400 mt-1">Legal Metrology Enforcement Suite</p>
+          <h1 className="text-3xl font-bold text-slate-800 tracking-tight">CompliScan</h1>
+          <p className="text-sm text-slate-500 mt-1.5 font-medium">Legal Metrology Enforcement Suite</p>
+          <div className="flex items-center justify-center gap-2 mt-3">
+            <span className="text-[10px] bg-fda-600/10 text-fda-600 px-2.5 py-1 rounded-full font-semibold border border-fda-600/20">SIH-26034</span>
+            <span className="text-[10px] bg-teal-50 text-teal-700 px-2.5 py-1 rounded-full font-semibold border border-teal-200">Packaged Food Safety</span>
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-          <div className="flex gap-2 mb-6">
+        {/* Auth Form Card */}
+        <form onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-200 p-7 space-y-4">
+          {/* Tab toggle */}
+          <div className="flex gap-1 p-1 bg-slate-100 rounded-xl mb-6">
             <button
               type="button"
               onClick={() => setIsLogin(true)}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition ${isLogin ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${isLogin ? 'bg-fda-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
             >
               Sign In
             </button>
             <button
               type="button"
               onClick={() => setIsLogin(false)}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition ${!isLogin ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition-all ${!isLogin ? 'bg-fda-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
             >
               Sign Up
             </button>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5">Username</label>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Username</label>
             <input
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="e.g. jdoe_inspector"
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition"
+              className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20 transition"
               required
             />
           </div>
@@ -148,24 +158,24 @@ export function LoginPage() {
           {!isLogin && (
             <>
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Full Name</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Full Name</label>
                 <input
                   type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="e.g. John Doe"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20 transition"
                   required={!isLogin}
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Inspector ID / Badge #</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Inspector ID / Badge #</label>
                 <input
                   type="text"
                   value={inspectorId}
                   onChange={(e) => setInspectorId(e.target.value)}
-                  placeholder="e.g. Insp. LM-001"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition"
+                  placeholder="e.g. LM-001"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20 transition"
                   required={!isLogin}
                 />
               </div>
@@ -173,27 +183,36 @@ export function LoginPage() {
           )}
 
           <div>
-            <label className="block text-xs font-semibold text-slate-400 mb-1.5">Password</label>
+            <label className="block text-xs font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition"
+              className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20 transition"
               required
             />
           </div>
 
           {error && (
-            <div className="bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs rounded-lg px-3 py-2.5">
-              {error}
+            <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl px-4 py-3 font-medium flex items-center justify-between">
+              <span>{error}</span>
+              {!isLogin && error.includes('already exists') && (
+                <button
+                  type="button"
+                  onClick={() => { setIsLogin(true); setError(''); }}
+                  className="ml-2 text-blue-700 hover:text-blue-900 underline font-semibold cursor-pointer shrink-0"
+                >
+                  Sign In instead
+                </button>
+              )}
             </div>
           )}
 
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2.5 rounded-lg text-sm transition flex items-center justify-center gap-2 mt-2"
+            className="w-full bg-fda-600 hover:bg-fda-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl text-sm transition-all flex items-center justify-center gap-2 mt-3 shadow-sm shadow-fda-600/20"
           >
             {isLoading ? (
               <>
@@ -208,6 +227,11 @@ export function LoginPage() {
             )}
           </button>
         </form>
+
+        {/* Footer text */}
+        <p className="text-center text-[11px] text-slate-400 mt-6">
+          Ministry of Consumer Affairs, Food & Public Distribution · Legal Metrology Act, 2009
+        </p>
       </div>
     </div>
   );

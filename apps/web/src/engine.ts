@@ -201,6 +201,7 @@ export class LegalMetrologyEngine {
           value: deducedQty,
           unit: tokens.usp.unit || 'g',
           rawText: `${deducedQty} ${tokens.usp.unit || 'g'} (Verified via USP ₹${tokens.usp.value}/${tokens.usp.unit || 'g'} and MRP ₹${tokens.mrp.value})`,
+          box: tokens.mrp.box || { x: 0, y: 0, width: 0, height: 0 },
         };
       }
     }
@@ -385,7 +386,7 @@ export class LegalMetrologyEngine {
     // 10. Rule 6(2) — Consumer Care: phone + email + name/office
     const hasPhone = tokens.consumerCare?.contactInfo?.match(/\d{10}|1800/);
     const hasEmail = tokens.consumerCare?.contactInfo?.includes('@');
-    const hasName = !!tokens.consumerCareName || /Consumer\s*(?:Cell|Care)|Grievance/i.test(tokens.consumerCare?.contactInfo || '') || /Consumer\s*Cell/i.test(tokens.manufacturer?.rawText || '');
+    const hasName = !!tokens.consumerCareName || /Consumer\s*(?:Cell|Care)|Grievance/i.test(tokens.consumerCare?.contactInfo || '') || /Consumer\s*Cell/i.test(tokens.manufacturerDetails?.rawText || '');
     const consumerCareScore = [hasPhone, hasEmail, hasName].filter(Boolean).length;
     results.push({
       ruleId: 'Rule 6(2)',

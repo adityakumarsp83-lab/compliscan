@@ -50,10 +50,11 @@ router.post('/signup', async (req, res) => {
     });
 
   } catch (err: any) {
+    console.error('Signup error:', err);
     if (err.code === '23505') { // unique constraint violation
       res.status(409).json({ error: 'Username or Inspector ID already exists' });
     } else {
-      res.status(500).json({ error: 'Error creating user' });
+      res.status(500).json({ error: err.message || 'Error creating user' });
     }
   }
 });
@@ -109,8 +110,9 @@ router.post('/login', async (req, res) => {
         inspectorId: userRow.inspector_id,
       },
     });
-  } catch (err) {
-    res.status(500).json({ error: 'Internal server error during login' });
+  } catch (err: any) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message || 'Internal server error during login' });
   }
 });
 

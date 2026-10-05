@@ -48,30 +48,30 @@ export function WardInspectionDashboard() {
     <div className="flex flex-col gap-6">
       {/* Top Ward KPI Telemetry Bar */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <span className="text-xs font-mono text-slate-400 block mb-1">STORES AUDITED</span>
-          <div className="text-2xl font-bold font-mono text-slate-100">{totalAudited}</div>
-          <span className="text-[11px] text-slate-500 mt-1 block">Pune Urban & Sub-wards</span>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <span className="text-xs font-mono text-slate-500 block mb-1">STORES AUDITED</span>
+          <div className="text-2xl font-bold font-mono text-slate-800">{totalAudited}</div>
+          <span className="text-[11px] text-slate-400 mt-1 block">Pune Urban & Sub-wards</span>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <span className="text-xs font-mono text-slate-400 block mb-1">WARD COMPLIANCE</span>
-          <div className="text-2xl font-bold font-mono text-emerald-400">{complianceRate}%</div>
-          <span className="text-[11px] text-emerald-500/80 mt-1 block">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <span className="text-xs font-mono text-slate-500 block mb-1">WARD COMPLIANCE</span>
+          <div className="text-2xl font-bold font-mono text-emerald-600">{complianceRate}%</div>
+          <span className="text-[11px] text-emerald-600 mt-1 block">
             {compliantCount} of {totalAudited} Verified Fully Compliant
           </span>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <span className="text-xs font-mono text-slate-400 block mb-1">21-DAY CURE NOTICES</span>
-          <div className="text-2xl font-bold font-mono text-amber-400">{pendingCount}</div>
-          <span className="text-[11px] text-amber-500/80 mt-1 block">Jan Vishwas Act Form A-1 Active</span>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <span className="text-xs font-mono text-slate-500 block mb-1">21-DAY CURE NOTICES</span>
+          <div className="text-2xl font-bold font-mono text-amber-600">{pendingCount}</div>
+          <span className="text-[11px] text-amber-600 mt-1 block">Jan Vishwas Act Form A-1 Active</span>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <span className="text-xs font-mono text-slate-400 block mb-1">CRITICAL OFFENSES</span>
-          <div className="text-2xl font-bold font-mono text-rose-400">{violationCount}</div>
-          <span className="text-[11px] text-rose-500/80 mt-1 block">Flagged for Penalty Compounding</span>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+          <span className="text-xs font-mono text-slate-500 block mb-1">CRITICAL OFFENSES</span>
+          <div className="text-2xl font-bold font-mono text-rose-600">{violationCount}</div>
+          <span className="text-[11px] text-rose-600 mt-1 block">Flagged for Penalty Compounding</span>
         </div>
       </div>
 
@@ -80,7 +80,7 @@ export function WardInspectionDashboard() {
         {/* Left Column: Interactive Store Register */}
         <div className="lg:col-span-5 flex flex-col gap-4">
           {/* Search & Filter Controls */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col gap-3">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col gap-3">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
@@ -88,7 +88,7 @@ export function WardInspectionDashboard() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Search store, ward, or product..."
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-xs font-sans text-slate-200 focus:outline-none focus:border-indigo-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-xs font-sans text-slate-700 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20"
               />
             </div>
 
@@ -99,8 +99,8 @@ export function WardInspectionDashboard() {
                   onClick={() => setFilterStatus(status)}
                   className={`px-2.5 py-1 rounded-md font-mono text-[11px] transition ${
                     filterStatus === status
-                      ? 'bg-indigo-600 text-white font-semibold'
-                      : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                      ? 'bg-fda-600 text-white font-semibold shadow-sm'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
                   }`}
                 >
                   {status.replace('_', ' ')}
@@ -119,31 +119,31 @@ export function WardInspectionDashboard() {
                   onClick={() => setSelectedStore(store)}
                   className={`p-4 rounded-xl border cursor-pointer transition ${
                     isSelected
-                      ? 'bg-slate-900 border-indigo-500 shadow-md ring-1 ring-indigo-500/30'
-                      : 'bg-slate-900/60 border-slate-800 hover:bg-slate-900 hover:border-slate-700'
+                      ? 'bg-blue-50/50 border-fda-500 shadow-sm ring-1 ring-fda-500/20'
+                      : 'bg-white border-slate-200 hover:bg-slate-50 hover:border-slate-300 shadow-sm'
                   }`}
                 >
                   <div className="flex justify-between items-start gap-2">
                     <div>
-                      <h3 className="font-semibold text-sm text-slate-100">{store.storeName}</h3>
-                      <p className="text-xs text-slate-400 mt-0.5">{store.ward}</p>
+                      <h3 className="font-semibold text-sm text-slate-800">{store.storeName}</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">{store.ward}</p>
                     </div>
                     <span
                       className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
                         store.status === 'COMPLIANT'
-                          ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : store.status === 'NOTICE_PENDING'
-                          ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                          : 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
                       }`}
                     >
                       {store.status.replace('_', ' ')}
                     </span>
                   </div>
 
-                  <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400 font-mono">
+                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 font-mono">
                     <span>{store.productAudited}</span>
-                    <span className="font-bold text-slate-200">Score: {store.score}</span>
+                    <span className="font-bold text-slate-700">Score: {store.score}</span>
                   </div>
                 </div>
               );
@@ -153,11 +153,12 @@ export function WardInspectionDashboard() {
 
         {/* Right Column: Leaflet Map & Selected Store Inspection Details */}
         <div className="lg:col-span-7 flex flex-col gap-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm h-[380px] relative">
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-[380px] relative">
             <MapContainer
               center={[18.5204, 73.8567]}
               zoom={12}
-              style={{ height: '100%', width: '100%', background: '#020617' }}
+              scrollWheelZoom={false}
+              style={{ height: '100%', width: '100%', background: '#f8fafc' }}
             >
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -194,58 +195,58 @@ export function WardInspectionDashboard() {
           </div>
 
           {selectedStore && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-3 border-b border-slate-800 gap-2">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-3 border-b border-slate-100 gap-2">
                 <div>
-                  <h3 className="font-bold text-base text-slate-100">{selectedStore.storeName}</h3>
-                  <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
-                    <MapPin className="w-3.5 h-3.5 text-indigo-400" />
+                  <h3 className="font-bold text-base text-slate-800">{selectedStore.storeName}</h3>
+                  <p className="text-xs text-slate-500 flex items-center gap-1.5 mt-0.5">
+                    <MapPin className="w-3.5 h-3.5 text-fda-600" />
                     {selectedStore.address}
                   </p>
                 </div>
-                <div className="text-xs font-mono text-slate-400">
-                  Officer: <strong className="text-slate-200">{selectedStore.inspectorId}</strong>
+                <div className="text-xs font-mono text-slate-500">
+                  Officer: <strong className="text-slate-700">{selectedStore.inspectorId}</strong>
                 </div>
               </div>
 
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs">
-                  <span className="text-slate-500 block mb-1">AUDITED PRODUCT</span>
-                  <span className="font-semibold text-slate-200">{selectedStore.productAudited}</span>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+                  <span className="text-slate-400 block mb-1">AUDITED PRODUCT</span>
+                  <span className="font-semibold text-slate-700">{selectedStore.productAudited}</span>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs">
-                  <span className="text-slate-500 block mb-1">INSPECTION TIMESTAMP</span>
-                  <span className="font-mono text-slate-200">{selectedStore.lastInspectionDate}</span>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+                  <span className="text-slate-400 block mb-1">INSPECTION TIMESTAMP</span>
+                  <span className="font-mono text-slate-700">{selectedStore.lastInspectionDate}</span>
                 </div>
-                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs">
-                  <span className="text-slate-500 block mb-1">VERDICT SCORE</span>
-                  <span className="font-mono font-bold text-emerald-400">{selectedStore.score} Met</span>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+                  <span className="text-slate-400 block mb-1">VERDICT SCORE</span>
+                  <span className="font-mono font-bold text-emerald-600">{selectedStore.score} Met</span>
                 </div>
               </div>
 
               {selectedStore.violations.length > 0 ? (
-                <div className="mt-4 p-3.5 bg-amber-950/20 border border-amber-500/30 rounded-xl flex flex-col gap-2">
+                <div className="mt-4 p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex flex-col gap-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5 font-mono">
-                      <AlertCircle className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-bold text-amber-800 flex items-center gap-1.5 font-mono">
+                      <AlertCircle className="w-4 h-4 text-amber-600" />
                       Statutory Violations Logged ({selectedStore.noticeRef})
                     </span>
-                    <span className="text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded">
+                    <span className="text-[10px] font-mono bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded">
                       {selectedStore.curePeriodDays}-Day Cure Period
                     </span>
                   </div>
                   <ul className="space-y-1.5 mt-1">
                     {selectedStore.violations.map((violation, idx) => (
-                      <li key={idx} className="text-xs text-slate-300 flex items-start gap-2">
-                        <span className="text-amber-400 font-bold">•</span>
+                      <li key={idx} className="text-xs text-slate-700 flex items-start gap-2">
+                        <span className="text-amber-500 font-bold">•</span>
                         <span>{violation}</span>
                       </li>
                     ))}
                   </ul>
                 </div>
               ) : (
-                <div className="mt-4 p-3.5 bg-emerald-950/20 border border-emerald-500/30 rounded-xl flex items-center gap-2 text-emerald-300 text-xs">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <div className="mt-4 p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-xs">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
                   <span>All 10 mandatory declarations verified. No statutory violations detected.</span>
                 </div>
               )}
