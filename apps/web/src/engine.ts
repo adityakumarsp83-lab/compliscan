@@ -17,7 +17,7 @@ export interface MetricCalibration {
 }
 
 export interface ParsedTokens {
-  fieldEvidence?: Record<string, { imageIndex: number; surface: string; source: string; confidence: number; rawText: string }[]>;
+  fieldEvidence?: Record<string, { imageIndex: number; surface: string; source: string; confidence?: number; rawText: string }[]>;
   conflicts?: { field: 'mrp' | 'netQuantity' | 'usp'; details: string }[];
   // Core 10 statutory tokens
   manufacturerDetails?: { rawText: string; detectedName: string };
@@ -53,6 +53,8 @@ export interface RuleCheckResult {
 
 export interface ComplianceReport {
   evidence?: import('./imageEvidence').EvidenceManifest;
+  inspection?: import('./inspectionMetadata').InspectionMetadata;
+  measurements?: { referenceWidthMm: number; barcodeWidthPx: number; imageIndex: number; netQuantityHeightPx?: number; mrpHeightPx?: number };
   timestamp: string;
   score: string;
   totalPassed: number;
@@ -63,12 +65,12 @@ export interface ComplianceReport {
 export const GS1_NOMINAL_WIDTH_MM = 37.29;
 
 export class MetricFiducialEngine {
-  public static calibrate(barcodeWidthPx: number): MetricCalibration {
-    if (barcodeWidthPx <= 0) throw new Error('Invalid barcode pixel width detected.');
+  public static calibrate(barcodeWidthPx: number, referenceWidthMm = GS1_NOMINAL_WIDTH_MM): MetricCalibration {
+    if (!Number.isFinite(barcodeWidthPx) || barcodeWidthPx <= 0 || !Number.isFinite(referenceWidthMm) || referenceWidthMm <= 0) throw new Error('Invalid barcode pixel width detected.');
     return {
       barcodeWidthPx,
-      nominalBarcodeWidthMm: GS1_NOMINAL_WIDTH_MM,
-      pixelsPerMm: barcodeWidthPx / GS1_NOMINAL_WIDTH_MM,
+      nominalBarcodeWidthMm: referenceWidthMm,
+      pixelsPerMm: barcodeWidthPx / referenceWidthMm,
     };
   }
 
@@ -485,8 +487,8 @@ export class LegalMetrologyEngine {
       status: fontMm > 0 ? (isHeightPass ? 'PASS' : 'FAIL') : 'WARNING',
       details:
         fontMm > 0
-          ? `Measured: ${fontMm}mm (Minimum required: ${minRequiredMm}mm for ${qty || '45'}${tokens.netQuantity?.unit || 'ml'} pack at ${calibration.pixelsPerMm.toFixed(1)} px/mm)`
-          : `Optical Scale: ${calibration.pixelsPerMm.toFixed(2)} px/mm (Standard GS1 37.29mm anchor active — font calibrated)`,
+          ? `Measured: ${fontMm}mm (Minimum required: ${minRequiredMm}mm for ${qty || 'unknown'}${tokens.netQuantity?.unit || ''} pack at ${calibration.pixelsPerMm.toFixed(1)} px/mm)`
+          : 'Font height unavailable: no measured spatial reference and numeral height.',
       isCoreInnovation: true,
       innovationBadge: 'In-Plane Optical GS1 Ruler',
       legalActSection: 'Rule 7, Table I — Minimum Height of Numeral',
@@ -497,7 +499,7 @@ export class LegalMetrologyEngine {
       ruleId: 'Rule 18',
       description: 'No Sale Above Declared MRP',
       status: 'WARNING',
-      details: 'Requires price comparison with National Commodity Registry — check Rule 18 Price Intelligence panel',
+      details: 'Requires an observed selling price and declared MRP; no verified price source is configured.',
       legalActSection: 'Rule 18 — Duties of Wholesale and Retail Dealers',
     });
 

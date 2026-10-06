@@ -16,56 +16,8 @@ export interface AnomalyVerdict {
   narrative: string;
 }
 
-export const NATIONAL_COMMODITY_REGISTRY: Record<string, ProductBenchmark> = {
-  '8901491101895': {
-    barcode: '8901491101895',
-    brandName: 'Kurkure Masala Munch',
-    standardNetQuantity: 150,
-    standardUnit: 'g',
-    authorizedStandardMRP: 30.0,
-    manufacturer: 'PepsiCo India Holdings Pvt Ltd',
-  },
-  '8901719104052': {
-    barcode: '8901719104052',
-    brandName: 'Parle-G Gold Biscuits',
-    standardNetQuantity: 100,
-    standardUnit: 'g',
-    authorizedStandardMRP: 10.0,
-    manufacturer: 'Parle Products Pvt Ltd',
-  },
-  '8901030383452': {
-    barcode: '8901030383452',
-    brandName: 'Bru Instant Coffee',
-    standardNetQuantity: 50,
-    standardUnit: 'g',
-    authorizedStandardMRP: 95.0,
-    manufacturer: 'Hindustan Unilever Limited',
-  },
-  '8901058852312': {
-    barcode: '8901058852312',
-    brandName: 'Maggi 2-Minute Noodles',
-    standardNetQuantity: 70,
-    standardUnit: 'g',
-    authorizedStandardMRP: 14.0,
-    manufacturer: 'Nestle India Limited',
-  },
-  '8901207045677': {
-    barcode: '8901207045677',
-    brandName: 'Dabur Almond Hair Oil',
-    standardNetQuantity: 45,
-    standardUnit: 'ml',
-    authorizedStandardMRP: 33.0,
-    manufacturer: 'Dabur India Ltd.',
-  },
-  '8901063093638': {
-    barcode: '8901063093638',
-    brandName: 'Britannia Good Day Butter Biscuit',
-    standardNetQuantity: 58.6,
-    standardUnit: 'g',
-    authorizedStandardMRP: 10.0,
-    manufacturer: 'Britannia Industries Ltd.',
-  },
-};
+// No authenticated benchmark feed is configured. Never substitute sample prices.
+export const NATIONAL_COMMODITY_REGISTRY: Record<string, ProductBenchmark> = {};
 
 export function evaluatePriceAndGrammageAnomalies(
   barcode: string,

@@ -1,4 +1,5 @@
 import { get, delMany, createStore, promisifyRequest, keys } from 'idb-keyval';
+import { isLegacyDemoInspection } from './inspectionMetadata';
 import type { TaggedScan } from './tokenMerger';
 
 export interface StoredInspection {
@@ -30,6 +31,7 @@ export interface StoredPhoto {
 
 export interface StoredEvidence {
   photos: StoredPhoto[];
+  referenceWidthMm?: number;
   barcodeWidthPx: number;
   scaleRatio: number;
 }
@@ -77,7 +79,7 @@ export async function listInspections(opts: ListOptions = {}): Promise<StoredIns
 
   for (const id of index) {
     const record = await get<StoredInspection>(`inspection:${id}`);
-    if (record) all.push(record);
+    if (record && !isLegacyDemoInspection(record)) all.push(record);
   }
 
   let filtered = all;

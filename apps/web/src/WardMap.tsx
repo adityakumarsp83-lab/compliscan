@@ -1,20 +1,34 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
 import { MapPin, AlertCircle, ShieldCheck, Search } from 'lucide-react';
-import { PUNE_WARDS_AUDIT_DATA } from './wardData';
+import { inspectionStatus, locationText } from './inspectionMetadata';
+import type { StoredInspection } from './inspectionStore';
+import type { ComplianceReport } from './engine';
 import type { StoreAuditRecord } from './wardData';
 import 'leaflet/dist/leaflet.css';
 
 // Component to dynamically recenter the map on store selection
 function MapRecenter({ lat, lng }: { lat: number; lng: number }) {
   const map = useMap();
-  map.setView([lat, lng], 14, { animate: true });
+  useEffect(() => { map.setView([lat, lng], 14, { animate: false }); }, [map, lat, lng]);
   return null;
 }
 
-export function WardInspectionDashboard() {
-  const stores = PUNE_WARDS_AUDIT_DATA;
-  const [selectedStore, setSelectedStore] = useState<StoreAuditRecord | null>(stores[0]);
+export function WardInspectionDashboard({ records }: { records: StoredInspection[] }) {
+  const stores = useMemo(() => records.flatMap((record): StoreAuditRecord[] => {
+    try {
+      const report = JSON.parse(record.report_json) as ComplianceReport;
+      const location = report.inspection?.location;
+      if (location?.status !== 'recorded' || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude) || Math.abs(location.latitude!) > 90 || Math.abs(location.longitude!) > 180) return [];
+      return [{ id: record.id, storeName: record.product_name, ward: locationText(location),
+        address: locationText(location), lat: location.latitude!, lng: location.longitude!,
+        lastInspectionDate: new Date(record.timestamp).toLocaleString(), inspectorId: record.inspector_id || 'Not recorded',
+        productAudited: record.product_name, score: record.score, status: inspectionStatus(record),
+        violations: (report.results || []).filter((result) => result.status !== 'PASS').map((result) => result.details) }];
+    } catch { return []; }
+  }), [records]);
+  const [selectedStore, setSelectedStore] = useState<StoreAuditRecord | null>(null);
+  useEffect(() => { setSelectedStore((previous) => stores.find((store) => store.id === previous?.id) || stores[0] || null); }, [stores]);
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
@@ -29,15 +43,15 @@ export function WardInspectionDashboard() {
 
   const totalAudited = stores.length;
   const compliantCount = stores.filter((s) => s.status === 'COMPLIANT').length;
-  const pendingCount = stores.filter((s) => s.status === 'NOTICE_PENDING').length;
+  const pendingCount = stores.filter((s) => s.status === 'REVIEW').length;
   const violationCount = stores.filter((s) => s.status === 'VIOLATION').length;
-  const complianceRate = Math.round((compliantCount / totalAudited) * 100);
+  const complianceRate = totalAudited ? Math.round((compliantCount / totalAudited) * 100) : 0;
 
   const getMarkerColor = (status: StoreAuditRecord['status']) => {
     switch (status) {
       case 'COMPLIANT':
         return '#10b981'; // emerald-500
-      case 'NOTICE_PENDING':
+      case 'REVIEW':
         return '#f59e0b'; // amber-500
       case 'VIOLATION':
         return '#f43f5e'; // rose-500
@@ -49,29 +63,29 @@ export function WardInspectionDashboard() {
       {/* Top Ward KPI Telemetry Bar */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-          <span className="text-xs font-mono text-slate-500 block mb-1">STORES AUDITED</span>
+          <span className="text-xs font-mono text-slate-500 block mb-1">MAPPED INSPECTIONS</span>
           <div className="text-2xl font-bold font-mono text-slate-800">{totalAudited}</div>
-          <span className="text-[11px] text-slate-400 mt-1 block">Pune Urban & Sub-wards</span>
+          <span className="text-[11px] text-slate-400 mt-1 block">{records.length - stores.length} inspections without recorded coordinates</span>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-          <span className="text-xs font-mono text-slate-500 block mb-1">WARD COMPLIANCE</span>
+          <span className="text-xs font-mono text-slate-500 block mb-1">RULES PASSED</span>
           <div className="text-2xl font-bold font-mono text-emerald-600">{complianceRate}%</div>
           <span className="text-[11px] text-emerald-600 mt-1 block">
-            {compliantCount} of {totalAudited} Verified Fully Compliant
+            {compliantCount} of {totalAudited} with every rule passed
           </span>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-          <span className="text-xs font-mono text-slate-500 block mb-1">21-DAY CURE NOTICES</span>
+          <span className="text-xs font-mono text-slate-500 block mb-1">REQUIRES REVIEW</span>
           <div className="text-2xl font-bold font-mono text-amber-600">{pendingCount}</div>
-          <span className="text-[11px] text-amber-600 mt-1 block">Jan Vishwas Act Form A-1 Active</span>
+          <span className="text-[11px] text-amber-600 mt-1 block">Review warnings in saved reports</span>
         </div>
 
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-          <span className="text-xs font-mono text-slate-500 block mb-1">CRITICAL OFFENSES</span>
+          <span className="text-xs font-mono text-slate-500 block mb-1">FLAGGED FINDINGS</span>
           <div className="text-2xl font-bold font-mono text-rose-600">{violationCount}</div>
-          <span className="text-[11px] text-rose-600 mt-1 block">Flagged for Penalty Compounding</span>
+          <span className="text-[11px] text-rose-600 mt-1 block">Inspections with failed checks</span>
         </div>
       </div>
 
@@ -87,13 +101,13 @@ export function WardInspectionDashboard() {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search store, ward, or product..."
+                placeholder="Search product or coordinates..."
                 className="w-full bg-slate-50 border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-xs font-sans text-slate-700 placeholder-slate-400 focus:outline-none focus:border-fda-500 focus:ring-2 focus:ring-fda-500/20"
               />
             </div>
 
             <div className="flex gap-1.5 flex-wrap text-xs">
-              {['ALL', 'COMPLIANT', 'NOTICE_PENDING', 'VIOLATION'].map((status) => (
+              {['ALL', 'COMPLIANT', 'REVIEW', 'VIOLATION'].map((status) => (
                 <button
                   key={status}
                   onClick={() => setFilterStatus(status)}
@@ -132,7 +146,7 @@ export function WardInspectionDashboard() {
                       className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
                         store.status === 'COMPLIANT'
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          : store.status === 'NOTICE_PENDING'
+                          : store.status === 'REVIEW'
                           ? 'bg-amber-50 text-amber-700 border-amber-200'
                           : 'bg-rose-50 text-rose-700 border-rose-200'
                       }`}
@@ -154,8 +168,8 @@ export function WardInspectionDashboard() {
         {/* Right Column: Leaflet Map & Selected Store Inspection Details */}
         <div className="lg:col-span-7 flex flex-col gap-4">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-[380px] relative">
-            <MapContainer
-              center={[18.5204, 73.8567]}
+            {stores.length > 0 ? <MapContainer
+              center={[stores[0].lat, stores[0].lng]}
               zoom={12}
               scrollWheelZoom={false}
               style={{ height: '100%', width: '100%', background: '#f8fafc' }}
@@ -191,7 +205,7 @@ export function WardInspectionDashboard() {
                   </Popup>
                 </CircleMarker>
               ))}
-            </MapContainer>
+            </MapContainer> : <div className="p-8 text-sm text-slate-500">No inspections with device coordinates yet. Allow location access over HTTPS and scan a product. Map tiles require connectivity.</div>}
           </div>
 
           {selectedStore && (
@@ -229,11 +243,9 @@ export function WardInspectionDashboard() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-amber-800 flex items-center gap-1.5 font-mono">
                       <AlertCircle className="w-4 h-4 text-amber-600" />
-                      Statutory Violations Logged ({selectedStore.noticeRef})
+                      Saved audit findings
                     </span>
-                    <span className="text-[10px] font-mono bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded">
-                      {selectedStore.curePeriodDays}-Day Cure Period
-                    </span>
+
                   </div>
                   <ul className="space-y-1.5 mt-1">
                     {selectedStore.violations.map((violation, idx) => (
@@ -247,7 +259,7 @@ export function WardInspectionDashboard() {
               ) : (
                 <div className="mt-4 p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-emerald-800 text-xs">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  <span>All 10 mandatory declarations verified. No statutory violations detected.</span>
+                  <span>All checks in this saved report passed.</span>
                 </div>
               )}
             </div>

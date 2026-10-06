@@ -1,7 +1,7 @@
 import type { ParsedTokens, OCRBlock } from './engine';
 import type { GeminiExtractionResult } from './apiClient';
 
-export type OCRSource = 'tesseract' | 'gemini';
+export type OCRSource = 'tesseract' | 'gemini' | 'manual';
 
 export interface TaggedScan {
   tokens: ParsedTokens;
@@ -9,7 +9,7 @@ export interface TaggedScan {
   source: OCRSource;
   imageIndex: number;
   surface?: string;
-  confidence: number; // 0–100
+  confidence?: number; // 0–100 when supplied by the engine; absent for manual/Gemini
 }
 
 /** Harmonize declarations without discarding complementary fields or conflicting evidence. */
@@ -17,7 +17,7 @@ export function mergeTokenSets(scans: TaggedScan[]): ParsedTokens {
   const merged: ParsedTokens = { fieldEvidence: {} };
   // Preserve Gemini preference, but choose the highest confidence within each source.
   const sorted = [...scans].sort((a, b) =>
-    a.source === b.source ? b.confidence - a.confidence : a.source === 'gemini' ? -1 : 1
+    a.source === b.source ? (b.confidence ?? -1) - (a.confidence ?? -1) : a.source === 'gemini' ? -1 : 1
   );
   const fields = ['manufacturerDetails', 'genericName', 'netQuantity', 'mfgDate', 'expDate',
     'mrp', 'countryOfOrigin', 'usp', 'fssaiLicense', 'pinCode', 'consumerCareName'] as const;

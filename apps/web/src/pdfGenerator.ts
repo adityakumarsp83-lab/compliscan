@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import type { ComplianceReport } from './engine';
+import { locationText } from './inspectionMetadata';
 import { blobToDataURL } from './imageEvidence';
 
 // Standard PDF fonts do not encode the rupee sign or typographic dashes correctly.
@@ -42,8 +43,8 @@ export async function createImprovementNoticePDF(
   }));
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
-  const noticeId = `IN-2026-${Math.floor(100000 + Math.random() * 900000)}`;
-  const inspectionDate = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'medium' });
+  const noticeId = report.inspection?.id || 'Reference not recorded';
+  const inspectionDate = new Date(report.timestamp).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'medium' });
 
   // 1. Header banner
   doc.setFillColor(15, 23, 42);
@@ -51,22 +52,22 @@ export async function createImprovementNoticePDF(
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
-  doc.text('GOVERNMENT OF INDIA', pageWidth / 2, 10, { align: 'center' });
+  doc.text('COMPLISCAN', pageWidth / 2, 10, { align: 'center' });
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
-  doc.text('MINISTRY OF CONSUMER AFFAIRS, FOOD & PUBLIC DISTRIBUTION', pageWidth / 2, 16, { align: 'center' });
-  doc.text('DIRECTORATE OF LEGAL METROLOGY — FIELD ENFORCEMENT WING', pageWidth / 2, 21, { align: 'center' });
+  doc.text('PACKAGED PRODUCT INSPECTION', pageWidth / 2, 16, { align: 'center' });
+  doc.text('Original photographs and recorded audit findings', pageWidth / 2, 21, { align: 'center' });
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(56, 189, 248);
-  doc.text('STATUTORY IMPROVEMENT NOTICE (FORM A-1)', pageWidth / 2, 27, { align: 'center' });
+  doc.text('INSPECTION EVIDENCE REPORT', pageWidth / 2, 27, { align: 'center' });
 
   // Legal reference sub-header
   doc.setTextColor(100, 116, 139);
   doc.setFontSize(7.5);
   doc.setFont('helvetica', 'italic');
   doc.text(
-    'Issued under Section 36 of Legal Metrology Act, 2009 | Legal Metrology (Packaged Commodities) Rules, 2011',
+    'Automated findings for inspector review; this export is not an issued statutory notice.',
     pageWidth / 2, 37, { align: 'center' }
   );
   doc.setDrawColor(203, 213, 225);
@@ -74,24 +75,30 @@ export async function createImprovementNoticePDF(
 
   // 2. Inspection metadata box
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(14, 43, pageWidth - 28, 28, 2, 2, 'F');
-  doc.rect(14, 43, pageWidth - 28, 28, 'S');
+  doc.roundedRect(14, 43, pageWidth - 28, 46, 2, 2, 'F');
+  doc.rect(14, 43, pageWidth - 28, 46, 'S');
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(15, 23, 42);
-  doc.text('Notice Ref:', 18, 49); doc.setFont('helvetica', 'normal'); doc.text(noticeId, 45, 49);
+  doc.text('Inspection ID:', 18, 49); doc.setFont('helvetica', 'normal'); doc.text(noticeId, 45, 49);
   doc.setFont('helvetica', 'bold'); doc.text('Timestamp:', 18, 55); doc.setFont('helvetica', 'normal'); doc.text(inspectionDate, 45, 55);
   doc.setFont('helvetica', 'bold'); doc.text('Score:', 18, 61);
   doc.setFont('helvetica', 'bold');
-  const scoreRatio = report.totalPassed / report.totalRules;
+  const scoreRatio = report.results.some((result) => result.status === 'FAIL') ? 0 : report.results.some((result) => result.status === 'WARNING') ? 0.5 : 1;
   doc.setTextColor(scoreRatio >= 0.8 ? 22 : scoreRatio >= 0.5 ? 180 : 225, scoreRatio >= 0.8 ? 101 : scoreRatio >= 0.5 ? 100 : 29, scoreRatio >= 0.8 ? 52 : scoreRatio >= 0.5 ? 20 : 72);
-  doc.text(`${report.score} Statutory Declarations Met`, 45, 61);
+  doc.text(`${report.score} Automated Checks Passed`, 45, 61);
   doc.setTextColor(15, 23, 42);
-  doc.setFont('helvetica', 'bold'); doc.text('Optical Scale:', 110, 49); doc.setFont('helvetica', 'normal'); doc.text(`${scaleRatio.toFixed(2)} px/mm`, 140, 49);
-  doc.setFont('helvetica', 'bold'); doc.text('OCR Pipeline:', 110, 55); doc.setFont('helvetica', 'normal'); doc.text('Tesseract v5 LSTM + Gemini 1.5 Flash', 140, 55);
+  doc.setFont('helvetica', 'bold'); doc.text('Optical Scale:', 110, 49); doc.setFont('helvetica', 'normal'); doc.text(scaleRatio > 0 ? `${scaleRatio.toFixed(2)} px/mm` : 'Not calibrated', 140, 49);
+  doc.setFont('helvetica', 'bold'); doc.text('OCR Pipeline:', 110, 55); doc.setFont('helvetica', 'normal'); doc.text((report.inspection?.sources || []).join(', ') || 'Not recorded', 140, 55);
+
+  doc.setFont('helvetica', 'bold'); doc.text('Inspector:', 18, 67);
+  doc.setFont('helvetica', 'normal'); doc.text(pdfText([report.inspection?.inspectorName, report.inspection?.inspectorId].filter(Boolean).join(' / ') || 'Not recorded'), 45, 67);
+  doc.setFont('helvetica', 'bold'); doc.text('Location:', 18, 73);
+  doc.setFont('helvetica', 'normal'); doc.text(doc.splitTextToSize(pdfText(locationText(report.inspection?.location)), pageWidth - 65), 45, 73);
+  if (report.inspection?.location.recordedAt) doc.text(`Position recorded: ${new Date(report.inspection.location.recordedAt).toISOString()}`, 18, 84);
 
   // 3. Multi-photo evidence grid
-  let currentY = 76;
+  let currentY = 94;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(15, 23, 42);
@@ -125,7 +132,7 @@ export async function createImprovementNoticePDF(
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(7.5);
     doc.setTextColor(100, 116, 139);
-    doc.text('[Digital evidence captured on-device. No image data in export.]', 14, currentY + 4);
+    doc.text('[No original photographs attached to this report.]', 14, currentY + 4);
     currentY += 10;
   }
 
@@ -133,7 +140,7 @@ export async function createImprovementNoticePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.setTextColor(15, 23, 42);
-  doc.text('2. Statutory Findings & 18-Rule Non-Compliance Checklist', 14, currentY);
+  doc.text('2. Recorded Audit Findings', 14, currentY);
   currentY += 5;
 
   // Table header
@@ -187,11 +194,11 @@ export async function createImprovementNoticePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(146, 64, 14);
-  doc.text('STATUTORY DIRECTIVE — LEGAL METROLOGY ACT, 2009 — SECTION 36:', 18, currentY + 5.5);
+  doc.text('INSPECTOR REVIEW:', 18, currentY + 5.5);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(120, 53, 15);
-  const directive = 'Procedural labeling contraventions under Rules 6 & 7 of the Legal Metrology (Packaged Commodities) Rules, 2011 are subject to a mandatory 21-DAY IMPROVEMENT PERIOD. The manufacturer/packer is directed to rectify all highlighted non-compliances or show cause within 21 days. Failure to rectify shall trigger administrative penalty under Section 36 (Fine: up to ₹4,000).';
+  const directive = 'Review extracted declarations against the original photographs and applicable rules. Missing or uncertain evidence requires manual verification. This report does not issue a cure deadline, penalty, official seal, or digital signature.';
   doc.text(doc.splitTextToSize(pdfText(directive), pageWidth - 36), 18, currentY + 12);
 
   // 6. Footer
@@ -199,8 +206,8 @@ export async function createImprovementNoticePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(71, 85, 105);
-  doc.text('Digitally authenticated by CompliScan Field Enforcement Suite v2.0 | SIH-26034', 14, currentY);
-  doc.text('[Seal of Legal Metrology Officer]', pageWidth - 60, currentY);
+  doc.text('Generated by CompliScan from saved inspection data.', 14, currentY);
+  doc.text('Unsigned inspection report', pageWidth - 60, currentY);
 
   if (report.evidence) {
     doc.addPage();
@@ -228,7 +235,7 @@ export async function createImprovementNoticePDF(
       evidenceY += 14;
     }
   }
-  return { doc, fileName: `CompliScan_Notice_${noticeId}.pdf` };
+  return { doc, fileName: `CompliScan_Report_${noticeId}.pdf` };
 }
 
 export async function generateImprovementNoticePDF(
@@ -244,6 +251,8 @@ export function exportReportAsJSON(report: ComplianceReport): void {
   const exportData = {
     exportedAt: new Date().toISOString(),
     evidence: report.evidence,
+    inspection: report.inspection,
+    measurements: report.measurements,
     complianceSummary: {
       score: report.score,
       totalPassed: report.totalPassed,

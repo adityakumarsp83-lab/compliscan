@@ -31,6 +31,8 @@ import {
   ChevronRight,
   CheckCircle,
 } from 'lucide-react';
+import { captureLocation, locationText, inspectionStatus, detectGtin } from './inspectionMetadata';
+import type { InspectionMetadata } from './inspectionMetadata';
 import { mapConcurrent, OCR_CONCURRENCY } from './concurrentProcessing';
 import { recognizeLocally } from './localOcr';
 import { PwaControls } from './PwaControls';
@@ -40,7 +42,6 @@ import { generateImprovementNoticePDF } from './pdfGenerator';
 import { hashImage, createEvidenceManifest, surfaceForImage } from './imageEvidence';
 import { WardInspectionDashboard } from './WardMap';
 import {
-  NATIONAL_COMMODITY_REGISTRY,
   evaluatePriceAndGrammageAnomalies,
   type AnomalyVerdict,
 } from './registryData';
@@ -76,8 +77,8 @@ interface ImageEntry {
 function AppShell() {
   const { user, isOfflineMode, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<ActiveTab>('SCANNER');
-  const [barcodeWidthPx, setBarcodeWidthPx] = useState<number>(320);
-  const [selectedBarcode, setSelectedBarcode] = useState<string>('8901491101895');
+  const [barcodeWidthPx, setBarcodeWidthPx] = useState<number>(0);
+  const [selectedBarcode, setSelectedBarcode] = useState<string>('');
   const [images, setImages] = useState<ImageEntry[]>([]);
   const [activeImageIdx, setActiveImageIdx] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -86,7 +87,7 @@ function AppShell() {
   const [rawText, setRawText] = useState<string>('');
   const [report, setReport] = useState<ComplianceReport | null>(null);
   const [scaleRatio, setScaleRatio] = useState<number>(0);
-  const [detectedBlocks, setDetectedBlocks] = useState<OCRBlock[]>([]);
+  const [, setDetectedBlocks] = useState<OCRBlock[]>([]);
   const [anomalyResult, setAnomalyResult] = useState<AnomalyVerdict | null>(null);
   const [geminiUsed, setGeminiUsed] = useState<boolean>(false);
   const [forceGeminiLoading, setForceGeminiLoading] = useState<boolean>(false);
@@ -97,6 +98,8 @@ function AppShell() {
   const [copiedHash, setCopiedHash] = useState<boolean>(false);
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [captureSurface, setCaptureSurface] = useState('Front');
+  const metadataRef = useRef<Promise<InspectionMetadata> | null>(null);
+  const [referenceWidthMm, setReferenceWidthMm] = useState(0);
   const auditIdRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -114,19 +117,29 @@ function AppShell() {
 
   // Load history when tab switches to HISTORY
   useEffect(() => {
-    if (activeTab === 'HISTORY') {
+    if (activeTab === 'HISTORY' || activeTab === 'HEATMAP' || activeTab === 'SCANNER') {
       loadHistory();
     }
   }, [activeTab]);
 
   const loadHistory = async () => {
-    const records = await listInspections({ search: historySearch || undefined, limit: 50 });
+    const records = await listInspections({ limit: Number.MAX_SAFE_INTEGER });
     setHistoryRecords(records);
   };
 
   const executeAudit = useCallback(
     async (allScans: TaggedScan[], barcodePx: number, barcodeStr: string, allImages: ImageEntry[]) => {
-      const calibration = MetricFiducialEngine.calibrate(barcodePx);
+      if (!metadataRef.current) {
+        const id = auditIdRef.current ||= uuidv4();
+        const capturedAt = new Date().toISOString();
+        metadataRef.current = captureLocation().then((location) => ({ id, capturedAt, location,
+          inputMode: allImages.length ? 'photographs' : 'manual',
+          inspectorName: user?.name, inspectorId: user?.inspectorId }));
+      }
+      const metadata = await metadataRef.current;
+      const calibration = barcodePx > 0 && referenceWidthMm > 0
+        ? MetricFiducialEngine.calibrate(barcodePx, referenceWidthMm)
+        : { barcodeWidthPx: 0, nominalBarcodeWidthMm: 0, pixelsPerMm: 0 };
       setScaleRatio(calibration.pixelsPerMm);
 
       // Merge tokens from all images
@@ -140,6 +153,20 @@ function AppShell() {
       }
 
       const auditReport = LegalMetrologyEngine.audit(mergedTokens, calibration);
+      auditReport.timestamp = metadata.capturedAt;
+      auditReport.inspection = { ...metadata, inputMode: allScans.every((scan) => scan.source === 'manual') ? 'manual' : metadata.inputMode, sources: [...new Set(allScans.map((scan) => scan.source))] };
+      auditReport.measurements = { referenceWidthMm, barcodeWidthPx: barcodePx,
+        imageIndex: activeImageIdx,
+        netQuantityHeightPx: mergedTokens.netQuantity?.box.height || undefined,
+        mrpHeightPx: mergedTokens.mrp?.box.height || undefined };
+      // Text boxes estimate line heights, not legal glyph measurements. Do not certify font compliance.
+      const fontRule = auditReport.results.find((result) => result.ruleId === 'Rule 7 Table I');
+      if (fontRule) {
+        fontRule.status = 'WARNING';
+        fontRule.details = 'Font compliance requires physical numeral measurement; OCR line boxes are not numeral heights.';
+      }
+      auditReport.totalPassed = auditReport.results.filter((result) => result.status === 'PASS').length;
+      auditReport.score = `${auditReport.totalPassed}/${auditReport.totalRules}`;
       auditReport.evidence = await createEvidenceManifest(allImages.map((image, imageIndex) => ({
         imageIndex, fileName: image.file.name, surface: image.surface, sha256: image.sha256,
       })));
@@ -184,7 +211,7 @@ function AppShell() {
         const thumbnail = allImages[0] ? allImages[0].thumbnail : '';
         const record: StoredInspection = {
           id: auditIdRef.current ||= uuidv4(),
-          timestamp: new Date().toISOString(),
+          timestamp: auditReport.timestamp,
           product_name: mergedTokens.genericName?.rawText || 'Unknown Product',
           barcode: barcodeStr,
           score: auditReport.score,
@@ -194,17 +221,18 @@ function AppShell() {
           tokens_json: JSON.stringify(mergedTokens),
           report_json: JSON.stringify(auditReport),
           image_thumbnail: thumbnail,
-          inspector_id: user?.inspectorId || 'offline',
-          inspector_name: user?.name || 'Offline User',
-          location: '',
+          inspector_id: metadata.inspectorId || '',
+          inspector_name: metadata.inspectorName || '',
+          location: locationText(metadata.location),
         };
         await saveInspection(record, {
-          barcodeWidthPx: barcodePx, scaleRatio: calibration.pixelsPerMm,
+          referenceWidthMm, barcodeWidthPx: barcodePx, scaleRatio: calibration.pixelsPerMm,
           photos: allImages.map((image) => ({
             blob: image.file, fileName: image.file.name, lastModified: image.file.lastModified,
             surface: image.surface, sha256: image.sha256, thumbnail: image.thumbnail, scans: image.scans,
           })),
         });
+        await loadHistory();
         // Also sync to backend (non-blocking)
         if (backendOnline) {
           saveToBackendHistory(record).catch(() => {});
@@ -213,12 +241,18 @@ function AppShell() {
         setErrorMessage("Audit completed, but local evidence could not be saved. Export the PDF now or free storage in History.");
       }
     },
-    [user, backendOnline]
+    [user, backendOnline, referenceWidthMm, activeImageIdx]
   );
 
   const processImages = async (files: File[]) => {
     if (files.length === 0 || isProcessing || forceGeminiLoading) return;
 
+    if (!metadataRef.current) {
+      const id = auditIdRef.current ||= uuidv4();
+      const capturedAt = new Date().toISOString();
+      metadataRef.current = captureLocation().then((location) => ({ id, capturedAt, location,
+        inputMode: 'photographs', inspectorName: user?.name, inspectorId: user?.inspectorId }));
+    }
     setIsProcessing(true);
     setErrorMessage(null);
     setReport(null);
@@ -294,9 +328,9 @@ function AppShell() {
             .filter((b) => b.text.length > 0);
         }
         if (blocks.length === 0) {
-          blocks = extractedText.split('\n').filter((l) => l.trim().length > 0).map((line, idx): OCRBlock => ({
+          blocks = extractedText.split('\n').filter((l) => l.trim().length > 0).map((line): OCRBlock => ({
             text: line.trim(),
-            boundingBox: { x: 30, y: 35 + idx * 22, width: 300, height: 16 },
+            boundingBox: { x: 0, y: 0, width: 0, height: 0 },
           }));
         }
 
@@ -322,9 +356,9 @@ function AppShell() {
               blocks.push(...geminiResult.raw_extracted_text
                 .split('\n')
                 .filter((l) => l.trim().length > 0)
-                .map((line, idx): OCRBlock => ({
+                .map((line): OCRBlock => ({
                   text: line.trim(),
-                  boundingBox: { x: 30, y: 35 + (blocks.length + idx) * 22, width: 300, height: 16 },
+                  boundingBox: { x: 0, y: 0, width: 0, height: 0 },
                 })));
             }
           } catch (geminiErr) {
@@ -352,7 +386,7 @@ function AppShell() {
             source: 'gemini',
             imageIndex: i,
             surface: entry.surface,
-            confidence: 95, // Gemini is typically very high confidence
+            // Provider does not return a calibrated confidence score.
           });
         }
 
@@ -381,18 +415,8 @@ function AppShell() {
     ).join('\n\n--- Image Break ---\n\n');
     setRawText(combined);
 
-    // Auto-detect barcode in OCR text to synchronize registry benchmark automatically
-    const cleanedText = combined.replace(/[\s-]+/g, '');
-    let matchedBarcode = selectedBarcode;
-    for (const b of Object.keys(NATIONAL_COMMODITY_REGISTRY)) {
-      if (cleanedText.includes(b)) {
-        matchedBarcode = b;
-        setSelectedBarcode(b);
-        break;
-      }
-    }
-
-    // Run final merged audit
+    const matchedBarcode = detectGtin(combined) || selectedBarcode;
+    setSelectedBarcode(matchedBarcode);
     const completedEntries = initialEntries.map((entry, imageIndex) => ({
       ...entry, scans: allScans.filter((scan) => scan.imageIndex === imageIndex),
       status: allScans.some((scan) => scan.imageIndex === imageIndex) ? 'done' as const : 'error' as const,
@@ -415,56 +439,23 @@ function AppShell() {
     e.target.value = '';
   };
 
-  const handleLoadOfflineDemo = (simulateViolation: boolean = false) => {
-    if (isProcessing || forceGeminiLoading) return;
-    images.forEach((image) => URL.revokeObjectURL(image.url));
-    auditIdRef.current = null;
-    setErrorMessage(null);
-    const sampleText = simulateViolation
-      ? 'Kurkure Masala Munch (Extruded Snack)\nMfg by PepsiCo India Holdings Pvt Ltd, Village Channo, Sangrur, Punjab - 148026\nNet Wt: 130 g\nMFD: 08/2026\nBest Before 6 Months from Mfg\nMRP Rs. 45.00 incl. of all taxes\nUSP Rs. 0.35 per g\nMade in India\nConsumer Care: 1800 22 4020, feedback@pepsico.com\nFSSAI Lic No: 10014011001895'
-      : 'Kurkure Masala Munch (Extruded Snack)\nMfg by PepsiCo India Holdings Pvt Ltd, Village Channo, Sangrur, Punjab - 148026\nNet Wt: 150 g\nMFD: 08/2026\nBest Before 6 Months from Mfg\nMRP Rs. 30.00 incl. of all taxes\nUSP Rs. 0.20 per g\nMade in India\nConsumer Care: 1800 22 4020, feedback@pepsico.com\nFSSAI Lic No: 10014011001895';
-
-    setRawText(sampleText);
-    const lines = sampleText.split('\n');
-    const mockBlocks: OCRBlock[] = lines.map((line, idx): OCRBlock => ({
-      text: line,
-      boundingBox: { x: 35, y: 35 + idx * 28, width: 380, height: line.includes('MRP') ? 22 : 13 },
-    }));
-    setDetectedBlocks(mockBlocks);
-    setImages([]);
-
-    const mockScan: TaggedScan = {
-      tokens: LegalMetrologyEngine.parseTokens(mockBlocks),
-      blocks: mockBlocks,
-      source: 'tesseract',
-      imageIndex: 0,
-      confidence: 99,
-    };
-
-    executeAudit([mockScan], barcodeWidthPx, selectedBarcode, []);
-  };
-
-  const handleManualReAudit = () => {
+  const handleManualReAudit = async () => {
+    if (isProcessing || forceGeminiLoading || !rawText.trim()) return;
+    setIsProcessing(true); setStatusMessage('Auditing your edited declarations…');
+    try {
     const lines = rawText.split('\n').filter((l) => l.trim().length > 0);
-    const mockBlocks: OCRBlock[] = lines.map((line, idx): OCRBlock => ({
+    const manualBlocks: OCRBlock[] = lines.map((line): OCRBlock => ({
       text: line,
-      boundingBox: { x: 30, y: 35 + idx * 28, width: 320, height: line.includes('MRP') ? 22 : 14 },
+      boundingBox: { x: 0, y: 0, width: 0, height: 0 },
     }));
-    setDetectedBlocks(mockBlocks);
+    setDetectedBlocks(manualBlocks);
 
-    // Auto-detect barcode from rawText if available
-    const cleanedText = rawText.replace(/[\s-]+/g, '');
-    let currentBarcode = selectedBarcode;
-    for (const b of Object.keys(NATIONAL_COMMODITY_REGISTRY)) {
-      if (cleanedText.includes(b)) {
-        currentBarcode = b;
-        setSelectedBarcode(b);
-        break;
-      }
-    }
-
-    const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(mockBlocks), blocks: mockBlocks, source: 'tesseract', imageIndex: 0, confidence: 99 };
-    executeAudit([scan], barcodeWidthPx, currentBarcode, images);
+    const currentBarcode = detectGtin(rawText) || selectedBarcode;
+    setSelectedBarcode(currentBarcode);
+    const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(manualBlocks), blocks: manualBlocks, source: 'manual', imageIndex: 0 };
+    await executeAudit([scan], barcodeWidthPx, currentBarcode, images);
+    } catch (error) { setErrorMessage(error instanceof Error ? error.message : 'Could not re-audit declarations.'); }
+    finally { setIsProcessing(false); setStatusMessage(''); }
   };
 
   const handleDownloadNotice = async () => {
@@ -512,93 +503,26 @@ function AppShell() {
     setRawText(remaining.map((image) => image.rawText).join('\n\n--- Image Break ---\n\n'));
     setDetectedBlocks(mergeBlocks(scans));
     if (remaining.length) await executeAudit(scans, barcodeWidthPx, selectedBarcode, remaining);
-    else { setAnomalyResult(null); auditIdRef.current = null; }
+    else { setAnomalyResult(null); auditIdRef.current = null; metadataRef.current = null; }
   };
 
-  // Fallback seed records if history is initially empty
-  const SEED_INSPECTIONS: StoredInspection[] = [
-    {
-      id: 'insp-seed-01',
-      timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-      product_name: 'Britannia Good Day 200g',
-      barcode: '8901063012845',
-      score: '7/10',
-      passed: 7,
-      total: 10,
-      raw_text: 'Britannia Good Day Butter Cookies\nMissing Unit Sale Price (USP) declaration',
-      tokens_json: '{}',
-      report_json: '{}',
-      image_thumbnail: 'https://images.unsplash.com/photo-1558961363-fa8fdf82db35?w=150&auto=format&fit=crop&q=60',
-      inspector_id: 'LM-4082',
-      inspector_name: 'Inspector Ramesh',
-      location: 'Bandra East Market, Mumbai',
-    },
-    {
-      id: 'insp-seed-02',
-      timestamp: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
-      product_name: 'Tata Salt Lite 1kg',
-      barcode: '8901030384729',
-      score: '10/10',
-      passed: 10,
-      total: 10,
-      raw_text: 'Tata Salt Lite 1kg\nAll 10 mandatory declarations verified',
-      tokens_json: '{}',
-      report_json: '{}',
-      image_thumbnail: 'https://images.unsplash.com/photo-1588964895597-cfccd6e2dbf9?w=150&auto=format&fit=crop&q=60',
-      inspector_id: 'LM-4082',
-      inspector_name: 'Inspector Ramesh',
-      location: 'Dadar West Wholesale, Mumbai',
-    },
-    {
-      id: 'insp-seed-03',
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 22).toISOString(),
-      product_name: 'Haldiram Bhujia 150g',
-      barcode: '8904004401928',
-      score: '5/10',
-      passed: 5,
-      total: 10,
-      raw_text: 'Haldiram Bhujia 150g\nFont height below Rule 7 minimum (1.2mm < 2.0mm)',
-      tokens_json: '{}',
-      report_json: '{}',
-      image_thumbnail: 'https://images.unsplash.com/photo-1601050690597-df0568f70950?w=150&auto=format&fit=crop&q=60',
-      inspector_id: 'LM-4082',
-      inspector_name: 'Inspector Ramesh',
-      location: 'Andheri Station Road, Mumbai',
-    },
-    {
-      id: 'insp-seed-04',
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString(),
-      product_name: 'Amul Butter 500g',
-      barcode: '8901262010052',
-      score: '10/10',
-      passed: 10,
-      total: 10,
-      raw_text: 'Amul Butter 500g\nAll 10 mandatory declarations verified',
-      tokens_json: '{}',
-      report_json: '{}',
-      image_thumbnail: 'https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?w=150&auto=format&fit=crop&q=60',
-      inspector_id: 'LM-4082',
-      inspector_name: 'Inspector Ramesh',
-      location: 'Kurla West Market, Mumbai',
-    },
-  ];
-
-  const displayHistory = historyRecords.length > 0 ? historyRecords : SEED_INSPECTIONS;
+  const displayHistory = historyRecords;
   const filteredHistory = displayHistory.filter((rec) => {
     const matchesSearch =
       !historySearch ||
       rec.product_name.toLowerCase().includes(historySearch.toLowerCase()) ||
       rec.barcode.includes(historySearch) ||
-      rec.inspector_name.toLowerCase().includes(historySearch.toLowerCase());
+      rec.inspector_name.toLowerCase().includes(historySearch.toLowerCase()) || rec.location.toLowerCase().includes(historySearch.toLowerCase());
     if (!matchesSearch) return false;
-    if (historyFilter === 'COMPLIANT') return rec.passed / rec.total >= 0.8;
-    if (historyFilter === 'VIOLATION') return rec.passed / rec.total < 0.8;
+    if (historyFilter === 'COMPLIANT') return inspectionStatus(rec) === 'COMPLIANT';
+    if (historyFilter === 'VIOLATION') return inspectionStatus(rec) === 'VIOLATION';
     return true;
   });
 
-  const totalScansCount = 142;
-  const compliantScansCount = 118;
-  const breachScansCount = 24;
+  const todayRecords = historyRecords.filter((record) => new Date(record.timestamp).toDateString() === new Date().toDateString());
+  const totalScansCount = historyRecords.length;
+  const compliantScansCount = historyRecords.filter((record) => inspectionStatus(record) === 'COMPLIANT').length;
+  const breachScansCount = historyRecords.filter((record) => inspectionStatus(record) === 'VIOLATION').length;
 
   const handleCopyChecksum = async () => {
     const checksum = report?.evidence?.checksum;
@@ -613,9 +537,11 @@ function AppShell() {
   };
 
   const handleNewScan = () => {
+    if (isProcessing || forceGeminiLoading) return;
     images.forEach((image) => URL.revokeObjectURL(image.url));
-    auditIdRef.current = null;
+    auditIdRef.current = null; metadataRef.current = null;
     setImages([]);
+    setSelectedBarcode(''); setBarcodeWidthPx(0); setReferenceWidthMm(0); setScaleRatio(0);
     setReport(null);
     setRawText('');
     setAnomalyResult(null);
@@ -629,7 +555,7 @@ function AppShell() {
     try {
       const saved = await getInspectionEvidence(record.id);
       const savedReport = JSON.parse(record.report_json) as ComplianceReport;
-      if (!Array.isArray(savedReport.results)) throw new Error('This demonstration history entry has no saved audit to reopen.');
+      if (!Array.isArray(savedReport.results)) throw new Error('This record has no saved audit to reopen.');
       const restored: ImageEntry[] = [];
       for (const photo of saved?.photos || []) {
         const file = new File([photo.blob], photo.fileName, { type: photo.blob.type, lastModified: photo.lastModified });
@@ -647,8 +573,9 @@ function AppShell() {
       images.forEach((image) => URL.revokeObjectURL(image.url));
       restored.forEach((image) => { image.url = URL.createObjectURL(image.file); });
       auditIdRef.current = record.id;
+      metadataRef.current = Promise.resolve(savedReport.inspection || { id: record.id, capturedAt: record.timestamp, inputMode: 'photographs', location: { status: 'unavailable', reason: 'Not recorded for this inspection.' } });
       setImages(restored); setActiveImageIdx(0); setReport(savedReport); setRawText(record.raw_text);
-      setBarcodeWidthPx(saved?.barcodeWidthPx || 320); setScaleRatio(saved?.scaleRatio || 0);
+      setBarcodeWidthPx(saved?.barcodeWidthPx || 0); setScaleRatio(saved?.referenceWidthMm ? saved.scaleRatio : 0); setReferenceWidthMm(saved?.referenceWidthMm || 0);
       setSelectedBarcode(record.barcode); setAnomalyResult(null); setCopiedHash(false);
       setGeminiUsed(restored.some((image) => image.scans.some((scan) => scan.source === 'gemini')));
       const blocks = mergeBlocks(restored.flatMap((image) => image.scans));
@@ -678,7 +605,7 @@ function AppShell() {
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-bold tracking-tight text-slate-900">CompliScan</h1>
                 <span className="text-[10px] bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded-full font-mono border border-blue-200">
-                  GOVT. OF INDIA
+                  INSPECTION TOOL
                 </span>
                 {geminiUsed && (
                   <span className="text-[10px] bg-teal-50 text-teal-700 font-bold px-2 py-0.5 rounded-full font-mono flex items-center gap-1 border border-teal-200">
@@ -725,8 +652,8 @@ function AppShell() {
                 {user?.name ? user.name.slice(0, 2).toUpperCase() : 'IR'}
               </div>
               <div className="text-left leading-tight">
-                <p className="text-xs font-bold text-slate-800">{user?.name || 'Inspector Ramesh'}</p>
-                <p className="text-[10px] font-mono text-slate-500">#{user?.inspectorId || 'LM-4082'}</p>
+                <p className="text-xs font-bold text-slate-800">{user?.name || 'Name not recorded'}</p>
+                <p className="text-[10px] font-mono text-slate-500">#{user?.inspectorId || 'Badge not recorded'}</p>
               </div>
             </div>
 
@@ -770,18 +697,18 @@ function AppShell() {
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-base text-slate-900">{user?.name || 'Inspector Ramesh'}</h3>
+                  <h3 className="font-bold text-base text-slate-900">{user?.name || 'Name not recorded'}</h3>
                   <span className="text-[11px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded border border-slate-200 font-semibold">
-                    #{user?.inspectorId || 'LM-4082'}
+                    #{user?.inspectorId || 'Badge not recorded'}
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">Legal Metrology Dept, Maharashtra</p>
+                <p className="text-xs text-slate-500 mt-0.5">{user?.role || 'Role not recorded'}</p>
               </div>
             </div>
             <div className="text-right">
               <span className="text-[10px] font-mono font-bold tracking-wider text-slate-400 block uppercase">JURISDICTION</span>
               <span className="text-xs font-bold font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 inline-block mt-0.5">
-                Zone 04
+                Not recorded
               </span>
             </div>
           </div>
@@ -813,7 +740,7 @@ function AppShell() {
         </div>
 
         {/* ── HEATMAP TAB ── */}
-        {activeTab === 'HEATMAP' && <WardInspectionDashboard />}
+        {activeTab === 'HEATMAP' && <WardInspectionDashboard records={historyRecords} />}
 
         {/* ── HISTORY TAB ── */}
         {activeTab === 'HISTORY' && (
@@ -839,7 +766,7 @@ function AppShell() {
                       : 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
                   }`}
                 >
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Compliant {displayHistory.filter((r) => r.passed / r.total >= 0.8).length}
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Compliant {displayHistory.filter((r) => inspectionStatus(r) === 'COMPLIANT').length}
                 </button>
                 <button
                   onClick={() => setHistoryFilter('VIOLATION')}
@@ -849,7 +776,7 @@ function AppShell() {
                       : 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
                   }`}
                 >
-                  <AlertTriangle className="w-3.5 h-3.5" /> Violations {displayHistory.filter((r) => r.passed / r.total < 0.8).length}
+                  <AlertTriangle className="w-3.5 h-3.5" /> Violations {displayHistory.filter((r) => inspectionStatus(r) === 'VIOLATION').length}
                 </button>
               </div>
 
@@ -870,18 +797,18 @@ function AppShell() {
             <div className="flex items-center justify-between bg-blue-50/70 border border-blue-200/80 rounded-xl px-4 py-2.5 text-xs text-blue-900">
               <div className="flex items-center gap-2 font-medium">
                 <span className="w-2 h-2 rounded-full bg-blue-600" />
-                <span><strong>Today: 18 Scans</strong> · 3 Infractions logged</span>
+                <span><strong>Today: {todayRecords.length} Scans</strong> · {todayRecords.filter((record) => inspectionStatus(record) === 'VIOLATION').length} inspections flagged</span>
               </div>
               <span className="text-[11px] font-mono text-slate-500 hidden sm:inline">
-                🔒 Evidence saved to tamper-proof SQLite & IndexedDB storage
+                Original evidence saved locally in IndexedDB with image checksums
               </span>
             </div>
 
             {/* History Cards Grid */}
             <div className="grid gap-3">
               {filteredHistory.map((record) => {
-                const isPass = record.passed / record.total >= 0.8;
-                const isPartial = record.passed / record.total >= 0.6 && !isPass;
+                const isPass = inspectionStatus(record) === 'COMPLIANT';
+                const isPartial = inspectionStatus(record) === 'REVIEW';
                 return (
                   <div
                     key={record.id}
@@ -910,9 +837,9 @@ function AppShell() {
                           {record.score} {isPass ? 'PASS' : isPartial ? 'PARTIAL' : 'NON-COMPLIANT'}
                         </span>
                       </div>
-                      <p className="text-xs font-mono text-slate-500 mt-0.5">GTIN: {record.barcode || '8901063012845'}</p>
+                      <p className="text-xs font-mono text-slate-500 mt-0.5">GTIN: {record.barcode || 'Not recorded'}</p>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        {new Date(record.timestamp).toLocaleString('en-IN')} · {record.location || 'Mumbai Market'}
+                        {new Date(record.timestamp).toLocaleString('en-IN')} · {record.location || 'Location not recorded'}
                       </p>
                     </div>
 
@@ -944,23 +871,10 @@ function AppShell() {
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-blue-600" />
                 <span className="text-xs font-medium text-slate-600">
-                  Cross-referencing statutory norms with Central Legal Metrology Registry.
+                  Auditing declarations extracted from your packaging photographs.
                 </span>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <button
-                  onClick={() => handleLoadOfflineDemo(false)}
-                  className="flex-1 sm:flex-none bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-300 text-emerald-800 px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Compliant Demo
-                </button>
-                <button
-                  onClick={() => handleLoadOfflineDemo(true)}
-                  className="flex-1 sm:flex-none bg-rose-50 hover:bg-rose-100 border-2 border-rose-300 text-rose-800 px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs"
-                >
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600" /> Violation Demo
-                </button>
-              </div>
+
             </div>
 
 
@@ -970,7 +884,7 @@ function AppShell() {
               <div className="bg-gradient-to-br from-blue-50/80 via-indigo-50/40 to-slate-50 border border-blue-200/80 rounded-3xl p-8 text-center shadow-sm relative overflow-hidden">
                 <div className="inline-flex items-center gap-2 bg-white/90 border border-blue-200 text-slate-700 text-xs font-bold px-3.5 py-1 rounded-full shadow-xs mb-4">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Edge-AI Ready (Local OpenCV + Tesseract LSTM / Gemini)
+                  Local OCR (Tesseract LSTM) / optional Gemini
                 </div>
 
                 <div className="w-20 h-20 rounded-full bg-white shadow-lg shadow-blue-500/10 border border-blue-100 flex items-center justify-center text-blue-600 mx-auto mb-4">
@@ -979,7 +893,7 @@ function AppShell() {
 
                 <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-1">SCAN PRODUCT</h2>
                 <p className="text-xs text-slate-500 max-w-md mx-auto mb-6">
-                  Point camera at packaged product label to verify Rule 6 mandatory declarations, Rule 7 minimum font heights, and Rule 18 price intelligence.
+                  Photograph each package surface to check declarations. Location is recorded from your device when permission and HTTPS are available.
                 </p>
 
                 <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto">
@@ -1036,15 +950,15 @@ function AppShell() {
                                   const geminiToks = geminiResultToTokens(r.data);
                                   const rawBlocks: OCRBlock[] = (r.data.raw_extracted_text || '')
                                     .split('\n').filter((l: string) => l.trim().length > 0)
-                                    .map((line: string, idx: number): OCRBlock => ({
+                                    .map((line: string): OCRBlock => ({
                                       text: line.trim(),
-                                      boundingBox: { x: 30, y: 35 + idx * 22, width: 300, height: 16 },
+                                      boundingBox: { x: 0, y: 0, width: 0, height: 0 },
                                     }));
                                   // Replace only this image's previous Gemini extraction; keep other surfaces.
                                   for (let i = allScans.length - 1; i >= 0; i--) {
                                     if (allScans[i].imageIndex === r.imageIndex && allScans[i].source === 'gemini') allScans.splice(i, 1);
                                   }
-                                  allScans.push({ tokens: geminiToks, blocks: rawBlocks, source: 'gemini', imageIndex: r.imageIndex, surface: images[r.imageIndex].surface, confidence: 95 });
+                                  allScans.push({ tokens: geminiToks, blocks: rawBlocks, source: 'gemini', imageIndex: r.imageIndex, surface: images[r.imageIndex].surface });
                                 }
                               }
                               if (allScans.length > 0) {
@@ -1182,65 +1096,24 @@ function AppShell() {
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                       <Barcode className="w-4 h-4 text-blue-600" />
-                      GS1 Barcode & Registry Anchor
+                      Barcode & Measurement Reference
                     </h2>
                     <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full">
-                      37.29mm Nominal
+                      Manual measurement
                     </span>
                   </div>
 
                   <p className="text-xs text-slate-500 mb-3 leading-relaxed">
-                    📐 <strong>Optical Metric Calibration:</strong> Uses the international EAN-13 nominal width of <strong>37.29mm</strong> to calibrate pixels to real millimeters, verifying <strong>Rule 7 Table I (Minimum Font Height)</strong> on numerals without calipers.
+                    Enter measurements from the photographed package to estimate text-line size. Physical numeral measurements are required for font compliance.
                   </p>
 
-                  <label className="text-xs text-slate-600 block mb-1 font-semibold">Registered EAN-13 Benchmark:</label>
-                  <select
-                    value={selectedBarcode}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setSelectedBarcode(val);
-                      if (detectedBlocks.length > 0) {
-                        const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(detectedBlocks), blocks: detectedBlocks, source: 'tesseract', imageIndex: 0, confidence: 80 };
-                        const surfaceScans = images.flatMap((image) => image.scans);
-                        executeAudit(surfaceScans.length ? surfaceScans : [scan], barcodeWidthPx, val, images);
-                      }
-                    }}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-500 mb-3"
-                  >
-                    {Object.values(NATIONAL_COMMODITY_REGISTRY).map((b) => (
-                      <option key={b.barcode} value={b.barcode}>
-                        {b.barcode} — {b.brandName} (₹{b.authorizedStandardMRP}, {b.standardNetQuantity}{b.standardUnit})
-                      </option>
-                    ))}
-                  </select>
-
-                  <div className="flex justify-between text-xs text-slate-600 mb-1 font-medium">
-                    <span>Barcode Optical Pixel Width:</span>
-                    <span className="font-mono text-blue-700 font-bold">{barcodeWidthPx}px</span>
-                  </div>
-
-                  <input
-                    type="range"
-                    min="180"
-                    max="650"
-                    value={barcodeWidthPx}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setBarcodeWidthPx(val);
-                      if (detectedBlocks.length > 0) {
-                        const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(detectedBlocks), blocks: detectedBlocks, source: 'tesseract', imageIndex: 0, confidence: 80 };
-                        const surfaceScans = images.flatMap((image) => image.scans);
-                        executeAudit(surfaceScans.length ? surfaceScans : [scan], val, selectedBarcode, images);
-                      }
-                    }}
-                    className="w-full accent-blue-600 cursor-pointer"
-                  />
-
-                  <div className="flex justify-between text-[11px] text-slate-400 mt-1 font-mono">
-                    <span>180px</span>
-                    <span className="text-blue-600 font-bold">Scale: {(barcodeWidthPx / 37.29).toFixed(2)} px/mm</span>
-                    <span>650px</span>
-                  </div>
+                  <label className="text-xs text-slate-600 block mb-1 font-semibold" htmlFor="product-gtin">Product GTIN (from label, optional):</label>
+                  <input id="product-gtin" value={selectedBarcode} onChange={(e) => setSelectedBarcode(e.target.value.replace(/\D/g, ''))} placeholder="Not detected — enter from packaging" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs font-mono mb-3" />
+                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-pixels">Measured reference width in photograph (pixels):</label>
+                  <input id="reference-pixels" type="number" min="0" value={barcodeWidthPx || ''} onChange={(e) => setBarcodeWidthPx(Math.max(0, Number(e.target.value)))} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs mb-3" />
+                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-mm">Actual physical width of the same reference (mm):</label>
+                  <input id="reference-mm" type="number" min="0" step="any" value={referenceWidthMm || ''} onChange={(e) => setReferenceWidthMm(Math.max(0, Number(e.target.value)))} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs" />
+                  <p className="text-xs text-slate-500 mt-2">Reference applies only to the same photograph and plane. Apply changes with Re-Audit below. No verified price benchmark is configured.</p>
                 </div>
 
                 {/* Extracted OCR Text */}
@@ -1256,6 +1129,7 @@ function AppShell() {
                   <button
                     id="btn-reaudit"
                     onClick={handleManualReAudit}
+                    disabled={isProcessing || forceGeminiLoading || !rawText.trim()}
                     className="w-full mt-3 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs transition shadow-sm"
                   >
                     <RefreshCw className="w-3.5 h-3.5" /> Re-audit Extracted Tokens
@@ -1270,7 +1144,7 @@ function AppShell() {
                     <Camera className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     <h3 className="font-bold text-base text-slate-700">No Product Audited Yet</h3>
                     <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-                      Click "Compliant Demo" or "Violation Demo" above, or upload packaging images to initiate automated 18-rule statutory verification.
+                      Upload packaging photographs to audit their extracted declarations.
                     </p>
                   </div>
                 ) : (
@@ -1285,20 +1159,20 @@ function AppShell() {
                           <h2 className="text-xl font-black text-slate-900 mt-0.5">
                             {report.totalPassed === report.totalRules
                               ? 'FULL COMPLIANCE'
-                              : report.totalPassed >= 7
-                              ? 'PARTIAL COMPLIANCE'
-                              : 'NON-COMPLIANT'}
+                              : report.results.some((result) => result.status === 'FAIL')
+                              ? 'FINDINGS FLAGGED'
+                              : 'REVIEW REQUIRED'}
                           </h2>
                           <p className="text-xs text-slate-500 mt-1 font-medium">
-                            {report.totalPassed} of {report.totalRules} mandatory declarations verified under Legal Metrology Act.
+                            {report.totalPassed} of {report.totalRules} automated checks passed. Review warnings and failed checks against the photographs.
                           </p>
                         </div>
 
                         <div className="text-right">
                           <span className={`text-xl font-black font-mono px-4 py-1.5 rounded-xl border ${
-                            report.totalPassed / report.totalRules >= 0.8
+                            report.results.every((result) => result.status === 'PASS')
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : report.totalPassed / report.totalRules >= 0.6
+                              : !report.results.some((result) => result.status === 'FAIL')
                               ? 'bg-amber-50 text-amber-700 border-amber-200'
                               : 'bg-rose-50 text-rose-700 border-rose-200'
                           }`}>
@@ -1311,41 +1185,16 @@ function AppShell() {
                       {report.totalPassed < report.totalRules && (
                         <div className="mt-4 p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2.5 text-rose-800 text-xs font-semibold">
                           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                          <span>Actionable Notice: {report.totalRules - report.totalPassed} non-compliant declaration(s) detected.</span>
+                          <span>{report.results.filter((result) => result.status === 'FAIL').length} failed checks · {report.results.filter((result) => result.status === 'WARNING').length} checks require review.</span>
                         </div>
                       )}
                     </div>
 
-                    {/* Rule 7 — Font Height Analysis (Reference 2) */}
                     <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                          Rule 7 — Font Height Analysis
-                          <span className="text-[10px] font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">
-                            Calibrated
-                          </span>
-                        </h3>
-                      </div>
-                      <p className="text-xs text-slate-500 font-mono mb-3">
-                        GS1 Calibrated Optical Verification · Barcode reference dimension: 37.29mm
-                      </p>
-
+                      <h3 className="text-sm font-bold text-slate-900 mb-2">Rule 7 — Font Height Analysis</h3>
+                      <p className="text-xs text-slate-500 mb-3">Not verified: OCR line boxes do not measure numeral height. Record physical numeral measurements before determining compliance.</p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5">
-                          <span className="text-xs text-slate-600 block font-medium">Net Qty Font Height</span>
-                          <div className="text-xl font-bold font-mono text-amber-600 mt-1">1.8mm</div>
-                          <span className="text-[11px] text-amber-700 font-medium mt-1 flex items-center gap-1">
-                            <AlertTriangle className="w-3 h-3 text-amber-600" /> Req: 2.0mm · UNDER MIN
-                          </span>
-                        </div>
-
-                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5">
-                          <span className="text-xs text-slate-600 block font-medium">MRP Font Height</span>
-                          <div className="text-xl font-bold font-mono text-emerald-600 mt-1">3.2mm</div>
-                          <span className="text-[11px] text-emerald-700 font-medium mt-1 flex items-center gap-1">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Req: 2.0mm · PASS
-                          </span>
-                        </div>
+                        {['Net quantity', 'MRP'].map((label) => <div key={label} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5"><span className="text-xs text-slate-600">{label} font height</span><div className="text-sm font-bold text-slate-600 mt-1">Not measured</div></div>)}
                       </div>
                     </div>
 
@@ -1470,18 +1319,18 @@ function AppShell() {
                           </h4>
                         </div>
                         <span className="text-[10px] font-mono bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2 py-0.5 rounded">
-                          CRYPTOGRAPHIC LOCK
+                          IMAGE HASHES
                         </span>
                       </div>
 
                       <div className="mt-3 space-y-2 text-xs font-mono text-slate-300">
                         <p className="flex items-center gap-2 text-slate-300">
                           <Map className="w-3.5 h-3.5 text-slate-400" />
-                          <span>19.0760° N, 72.8777° E (Bandra East Market, Mumbai)</span>
+                          <span>{locationText(report.inspection?.location)}</span>
                         </p>
                         <p className="flex items-center gap-2 text-slate-300">
                           <History className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{new Date().toLocaleString('en-IN')} IST</span>
+                          <span>{new Date(report.timestamp).toLocaleString('en-IN')}</span>
                         </p>
                       </div>
 
