@@ -31,6 +31,8 @@ import {
   ChevronRight,
   CheckCircle,
 } from 'lucide-react';
+import { scanBarcode } from './barcodeScanner';
+import type { BarcodeScan } from './barcodeTypes';
 import { captureLocation, locationText, inspectionStatus, detectGtin } from './inspectionMetadata';
 import type { InspectionMetadata } from './inspectionMetadata';
 import { mapConcurrent, OCR_CONCURRENCY } from './concurrentProcessing';
@@ -61,6 +63,7 @@ import { v4 as uuidv4 } from './uuid-shim';
 type ActiveTab = 'SCANNER' | 'HISTORY' | 'HEATMAP';
 
 interface ImageEntry {
+  barcodeScan?: BarcodeScan;
   sha256: string;
   surface: string;
   scans: TaggedScan[];
@@ -99,6 +102,7 @@ function AppShell() {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [captureSurface, setCaptureSurface] = useState('Front');
   const metadataRef = useRef<Promise<InspectionMetadata> | null>(null);
+  const referenceImageShaRef = useRef<string | null>(null);
   const [referenceWidthMm, setReferenceWidthMm] = useState(0);
   const auditIdRef = useRef<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -128,7 +132,7 @@ function AppShell() {
   };
 
   const executeAudit = useCallback(
-    async (allScans: TaggedScan[], barcodePx: number, barcodeStr: string, allImages: ImageEntry[]) => {
+    async (allScans: TaggedScan[], barcodePx: number, barcodeStr: string, allImages: ImageEntry[], referenceMm = referenceWidthMm) => {
       if (!metadataRef.current) {
         const id = auditIdRef.current ||= uuidv4();
         const capturedAt = new Date().toISOString();
@@ -137,8 +141,8 @@ function AppShell() {
           inspectorName: user?.name, inspectorId: user?.inspectorId }));
       }
       const metadata = await metadataRef.current;
-      const calibration = barcodePx > 0 && referenceWidthMm > 0
-        ? MetricFiducialEngine.calibrate(barcodePx, referenceWidthMm)
+      const calibration = barcodePx > 0 && referenceMm > 0
+        ? MetricFiducialEngine.calibrate(barcodePx, referenceMm)
         : { barcodeWidthPx: 0, nominalBarcodeWidthMm: 0, pixelsPerMm: 0 };
       setScaleRatio(calibration.pixelsPerMm);
 
@@ -155,8 +159,8 @@ function AppShell() {
       const auditReport = LegalMetrologyEngine.audit(mergedTokens, calibration);
       auditReport.timestamp = metadata.capturedAt;
       auditReport.inspection = { ...metadata, inputMode: allScans.every((scan) => scan.source === 'manual') ? 'manual' : metadata.inputMode, sources: [...new Set(allScans.map((scan) => scan.source))] };
-      auditReport.measurements = { referenceWidthMm, barcodeWidthPx: barcodePx,
-        imageIndex: activeImageIdx,
+      auditReport.measurements = { referenceWidthMm: referenceMm, barcodeWidthPx: barcodePx,
+        imageIndex: allImages.findIndex((image) => image.sha256 === referenceImageShaRef.current),
         netQuantityHeightPx: mergedTokens.netQuantity?.box.height || undefined,
         mrpHeightPx: mergedTokens.mrp?.box.height || undefined };
       // Text boxes estimate line heights, not legal glyph measurements. Do not certify font compliance.
@@ -226,10 +230,10 @@ function AppShell() {
           location: locationText(metadata.location),
         };
         await saveInspection(record, {
-          referenceWidthMm, barcodeWidthPx: barcodePx, scaleRatio: calibration.pixelsPerMm,
+          referenceImageSha: referenceImageShaRef.current || undefined, referenceWidthMm: referenceMm, barcodeWidthPx: barcodePx, scaleRatio: calibration.pixelsPerMm,
           photos: allImages.map((image) => ({
             blob: image.file, fileName: image.file.name, lastModified: image.file.lastModified,
-            surface: image.surface, sha256: image.sha256, thumbnail: image.thumbnail, scans: image.scans,
+            surface: image.surface, sha256: image.sha256, thumbnail: image.thumbnail, scans: image.scans, barcodeScan: image.barcodeScan,
           })),
         });
         await loadHistory();
@@ -293,6 +297,10 @@ function AppShell() {
       // Update status to processing
       setImages((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: 'processing' } : e)));
 
+      const barcodePromise = scanBarcode(entry.file).then((barcodeScan) => {
+        entry.barcodeScan = barcodeScan;
+        setImages((previous) => previous.map((image, index) => index === i ? { ...image, barcodeScan } : image));
+      });
       try {
         // Step 1: Canvas pre-processing
         setStatusMessage(`Image ${i + 1}: Enhancing (contrast, sharpen, deskew)…`);
@@ -405,6 +413,7 @@ function AppShell() {
         setErrorMessage('Could not read a photograph locally. Try a clearer JPEG or PNG and confirm offline setup has finished.');
         setImages((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: 'error' } : e)));
       }
+      await barcodePromise;
     });
     // Completion order must not change equal-confidence field selection or evidence identity.
     allScans.sort((a, b) => a.imageIndex - b.imageIndex);
@@ -415,14 +424,26 @@ function AppShell() {
     ).join('\n\n--- Image Break ---\n\n');
     setRawText(combined);
 
-    const matchedBarcode = detectGtin(combined) || selectedBarcode;
+    const decoded = initialEntries.flatMap((image, imageIndex) => image.barcodeScan?.barcode ? [{ ...image.barcodeScan.barcode, imageIndex }] : []);
+    const codes = [...new Set(decoded.map((barcode) => barcode.value))];
+    const matchedBarcode = codes.length === 1 ? codes[0] : codes.length > 1 ? '' : detectGtin(combined) || selectedBarcode;
+    const measured = decoded.find((barcode) => barcode.value === matchedBarcode);
+    const detectedWidth = measured?.widthPx || (codes.length > 1 ? 0 : barcodeWidthPx);
     setSelectedBarcode(matchedBarcode);
+    setBarcodeWidthPx(detectedWidth);
+    let measuredMm = codes.length > 1 ? 0 : referenceWidthMm;
+    if (codes.length > 1) { referenceImageShaRef.current = null; setReferenceWidthMm(0); }
+    if (measured) {
+      const photoSha = initialEntries[measured.imageIndex].sha256;
+      if (referenceImageShaRef.current !== photoSha) { measuredMm = 0; setReferenceWidthMm(0); }
+      referenceImageShaRef.current = photoSha; setActiveImageIdx(measured.imageIndex);
+    }
     const completedEntries = initialEntries.map((entry, imageIndex) => ({
       ...entry, scans: allScans.filter((scan) => scan.imageIndex === imageIndex),
       status: allScans.some((scan) => scan.imageIndex === imageIndex) ? 'done' as const : 'error' as const,
     }));
     setImages(completedEntries);
-    await executeAudit(allScans, barcodeWidthPx, matchedBarcode, completedEntries);
+    await executeAudit(allScans, detectedWidth, matchedBarcode, completedEntries, measuredMm);
     setIsProcessing(false);
     setStatusMessage('');
   };
@@ -440,7 +461,7 @@ function AppShell() {
   };
 
   const handleManualReAudit = async () => {
-    if (isProcessing || forceGeminiLoading || !rawText.trim()) return;
+    if (isProcessing || forceGeminiLoading || (!rawText.trim() && !images.length)) return;
     setIsProcessing(true); setStatusMessage('Auditing your edited declarations…');
     try {
     const lines = rawText.split('\n').filter((l) => l.trim().length > 0);
@@ -450,7 +471,7 @@ function AppShell() {
     }));
     setDetectedBlocks(manualBlocks);
 
-    const currentBarcode = detectGtin(rawText) || selectedBarcode;
+    const currentBarcode = selectedBarcode || detectGtin(rawText) || '';
     setSelectedBarcode(currentBarcode);
     const scan: TaggedScan = { tokens: LegalMetrologyEngine.parseTokens(manualBlocks), blocks: manualBlocks, source: 'manual', imageIndex: 0 };
     await executeAudit([scan], barcodeWidthPx, currentBarcode, images);
@@ -502,7 +523,12 @@ function AppShell() {
     const scans = remaining.flatMap((image) => image.scans);
     setRawText(remaining.map((image) => image.rawText).join('\n\n--- Image Break ---\n\n'));
     setDetectedBlocks(mergeBlocks(scans));
-    if (remaining.length) await executeAudit(scans, barcodeWidthPx, selectedBarcode, remaining);
+    const referencePresent = remaining.some((image) => image.sha256 === referenceImageShaRef.current);
+    const nextBarcode = remaining.some((image) => image.barcodeScan?.barcode?.value === selectedBarcode) ? selectedBarcode : '';
+    const nextWidth = referencePresent ? barcodeWidthPx : 0;
+    if (!referencePresent) { referenceImageShaRef.current = null; setReferenceWidthMm(0); setScaleRatio(0); }
+    setSelectedBarcode(nextBarcode); setBarcodeWidthPx(nextWidth);
+    if (remaining.length) await executeAudit(scans, nextWidth, nextBarcode, remaining, referencePresent ? referenceWidthMm : 0);
     else { setAnomalyResult(null); auditIdRef.current = null; metadataRef.current = null; }
   };
 
@@ -519,6 +545,8 @@ function AppShell() {
     return true;
   });
 
+  const barcodePhotos = images.flatMap((image, imageIndex) => image.barcodeScan?.barcode ? [{ barcode: image.barcodeScan.barcode, imageIndex, surface: image.surface }] : []);
+  const barcodeConflict = new Set(barcodePhotos.map((photo) => photo.barcode.value)).size > 1;
   const todayRecords = historyRecords.filter((record) => new Date(record.timestamp).toDateString() === new Date().toDateString());
   const totalScansCount = historyRecords.length;
   const compliantScansCount = historyRecords.filter((record) => inspectionStatus(record) === 'COMPLIANT').length;
@@ -539,7 +567,7 @@ function AppShell() {
   const handleNewScan = () => {
     if (isProcessing || forceGeminiLoading) return;
     images.forEach((image) => URL.revokeObjectURL(image.url));
-    auditIdRef.current = null; metadataRef.current = null;
+    auditIdRef.current = null; metadataRef.current = null; referenceImageShaRef.current = null;
     setImages([]);
     setSelectedBarcode(''); setBarcodeWidthPx(0); setReferenceWidthMm(0); setScaleRatio(0);
     setReport(null);
@@ -561,7 +589,7 @@ function AppShell() {
         const file = new File([photo.blob], photo.fileName, { type: photo.blob.type, lastModified: photo.lastModified });
         if (await hashImage(file) !== photo.sha256) throw new Error('Saved image does not match its evidence hash.');
         restored.push({ file, url: '', sha256: photo.sha256, surface: photo.surface,
-          thumbnail: photo.thumbnail, scans: photo.scans, blocks: photo.scans.flatMap((scan) => scan.blocks),
+          thumbnail: photo.thumbnail, barcodeScan: photo.barcodeScan, scans: photo.scans, blocks: photo.scans.flatMap((scan) => scan.blocks),
           rawText: photo.scans.flatMap((scan) => scan.blocks.map((block) => block.text)).join('\n'),
           confidence: photo.scans[0]?.confidence || 0, status: 'done' });
       }
@@ -572,11 +600,19 @@ function AppShell() {
       }
       images.forEach((image) => URL.revokeObjectURL(image.url));
       restored.forEach((image) => { image.url = URL.createObjectURL(image.file); });
+      // Older evidence did not contain barcode results. Decode original bytes on reopen.
+      await mapConcurrent(restored, OCR_CONCURRENCY, async (image) => {
+        if (!image.barcodeScan) image.barcodeScan = await scanBarcode(image.file);
+      });
+      const restoredCodes = [...new Set(restored.flatMap((image) => image.barcodeScan?.barcode ? [image.barcodeScan.barcode.value] : []))];
+      const restoredBarcode = record.barcode || (restoredCodes.length === 1 ? restoredCodes[0] : '');
+      const measuredBarcode = restored.find((image) => image.barcodeScan?.barcode?.value === restoredBarcode)?.barcodeScan?.barcode;
       auditIdRef.current = record.id;
       metadataRef.current = Promise.resolve(savedReport.inspection || { id: record.id, capturedAt: record.timestamp, inputMode: 'photographs', location: { status: 'unavailable', reason: 'Not recorded for this inspection.' } });
       setImages(restored); setActiveImageIdx(0); setReport(savedReport); setRawText(record.raw_text);
-      setBarcodeWidthPx(saved?.barcodeWidthPx || 0); setScaleRatio(saved?.referenceWidthMm ? saved.scaleRatio : 0); setReferenceWidthMm(saved?.referenceWidthMm || 0);
-      setSelectedBarcode(record.barcode); setAnomalyResult(null); setCopiedHash(false);
+      referenceImageShaRef.current = saved?.referenceImageSha || restored.find((image) => image.barcodeScan?.barcode?.value === restoredBarcode)?.sha256 || null;
+      setBarcodeWidthPx(measuredBarcode?.widthPx || saved?.barcodeWidthPx || 0); setScaleRatio(saved?.referenceImageSha && saved.referenceWidthMm ? saved.scaleRatio : 0); setReferenceWidthMm(saved?.referenceImageSha ? saved.referenceWidthMm || 0 : 0);
+      setSelectedBarcode(restoredBarcode); setAnomalyResult(null); setCopiedHash(false);
       setGeminiUsed(restored.some((image) => image.scans.some((scan) => scan.source === 'gemini')));
       const blocks = mergeBlocks(restored.flatMap((image) => image.scans));
       setDetectedBlocks(blocks); setActiveTab('SCANNER');
@@ -1099,21 +1135,26 @@ function AppShell() {
                       Barcode & Measurement Reference
                     </h2>
                     <span className="text-[10px] font-mono font-bold bg-teal-50 text-teal-700 border border-teal-200 px-2 py-0.5 rounded-full">
-                      Manual measurement
+                      {barcodePhotos.length ? 'Barcode detected' : isProcessing ? 'Detecting…' : 'Scan barcode photo'}
                     </span>
                   </div>
 
                   <p className="text-xs text-slate-500 mb-3 leading-relaxed">
-                    Enter measurements from the photographed package to estimate text-line size. Physical numeral measurements are required for font compliance.
+                    Retail barcodes are decoded from your photos on-device, including offline. Pixel width is estimated from the decoded bars; physical millimeters must be measured on the package.
                   </p>
 
+                  {barcodeConflict && <p className="text-xs text-amber-700 mb-3">Different product barcodes were found. Choose the correct photograph below; unrelated products must be scanned separately.</p>}
+                  {barcodePhotos.map(({ barcode, imageIndex, surface }) => <button key={imageIndex} type="button" disabled={isProcessing || forceGeminiLoading} onClick={() => { referenceImageShaRef.current = images[imageIndex].sha256; setSelectedBarcode(barcode.value); setBarcodeWidthPx(barcode.widthPx); setReferenceWidthMm(0); setScaleRatio(0); setActiveImageIdx(imageIndex); }} className="w-full text-left rounded-xl border border-teal-200 bg-teal-50 text-teal-900 p-2.5 text-xs mb-2">
+                    {surface} · {barcode.format.replace('_', '-')} · {barcode.value} · {barcode.widthPx.toFixed(1)} px estimated bar width
+                  </button>)}
+                  {images.length > 0 && !isProcessing && !barcodePhotos.length && <p className="text-xs text-amber-700 mb-3">{images.some((image) => image.barcodeScan?.status === 'unavailable') ? 'Barcode decoder could not finish. Reload and retry with a smaller JPEG or PNG.' : 'No readable retail barcode found. Add a sharp close-up of the complete barcode with blank space on both sides, or enter the printed GTIN below.'}</p>}
                   <label className="text-xs text-slate-600 block mb-1 font-semibold" htmlFor="product-gtin">Product GTIN (from label, optional):</label>
                   <input id="product-gtin" value={selectedBarcode} onChange={(e) => setSelectedBarcode(e.target.value.replace(/\D/g, ''))} placeholder="Not detected — enter from packaging" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs font-mono mb-3" />
-                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-pixels">Measured reference width in photograph (pixels):</label>
-                  <input id="reference-pixels" type="number" min="0" value={barcodeWidthPx || ''} onChange={(e) => setBarcodeWidthPx(Math.max(0, Number(e.target.value)))} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs mb-3" />
-                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-mm">Actual physical width of the same reference (mm):</label>
-                  <input id="reference-mm" type="number" min="0" step="any" value={referenceWidthMm || ''} onChange={(e) => setReferenceWidthMm(Math.max(0, Number(e.target.value)))} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs" />
-                  <p className="text-xs text-slate-500 mt-2">Reference applies only to the same photograph and plane. Apply changes with Re-Audit below. No verified price benchmark is configured.</p>
+                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-pixels">Barcode bar-pattern width in original photograph (pixels):</label>
+                  <input id="reference-pixels" type="number" min="0" value={barcodeWidthPx || ''} onChange={(e) => { referenceImageShaRef.current = images[activeImageIdx]?.sha256 || null; setBarcodeWidthPx(Math.max(0, Number(e.target.value))); }} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs mb-3" />
+                  <label className="text-xs text-slate-600 block mb-1" htmlFor="reference-mm">Actual width of the same black bar pattern, excluding blank margins (mm):</label>
+                  <input id="reference-mm" type="number" min="0" step="any" value={referenceWidthMm || ''} onChange={(e) => { referenceImageShaRef.current ||= images[activeImageIdx]?.sha256 || null; setReferenceWidthMm(Math.max(0, Number(e.target.value))); }} placeholder="Not measured" className="w-full bg-slate-50 border border-slate-300 rounded-xl p-2.5 text-xs" />
+                  <p className="text-xs text-slate-500 mt-2">No fixed barcode millimeter size is assumed. Select a detected barcode to view its photograph; reference applies only to that photograph and plane. Apply changes with Re-Audit below. No verified price benchmark is configured.</p>
                 </div>
 
                 {/* Extracted OCR Text */}
@@ -1129,7 +1170,7 @@ function AppShell() {
                   <button
                     id="btn-reaudit"
                     onClick={handleManualReAudit}
-                    disabled={isProcessing || forceGeminiLoading || !rawText.trim()}
+                    disabled={isProcessing || forceGeminiLoading || (!rawText.trim() && !images.length)}
                     className="w-full mt-3 bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-xs transition shadow-sm"
                   >
                     <RefreshCw className="w-3.5 h-3.5" /> Re-audit Extracted Tokens

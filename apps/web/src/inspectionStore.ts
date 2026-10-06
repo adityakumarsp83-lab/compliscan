@@ -27,11 +27,13 @@ export interface StoredPhoto {
   sha256: string;
   thumbnail: string;
   scans: TaggedScan[];
+  barcodeScan?: import('./barcodeTypes').BarcodeScan;
 }
 
 export interface StoredEvidence {
   photos: StoredPhoto[];
   referenceWidthMm?: number;
+  referenceImageSha?: string;
   barcodeWidthPx: number;
   scaleRatio: number;
 }

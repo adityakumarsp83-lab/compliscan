@@ -10,6 +10,7 @@ const backendProxy = {
 };
 
 export default defineConfig({
+  optimizeDeps: { include: ['@zxing/library'] },
   server: { host: true, port: 5173, proxy: { '/backend': backendProxy } },
   preview: { host: true, proxy: { '/backend': backendProxy } },
   plugins: [react(), VitePWA({
