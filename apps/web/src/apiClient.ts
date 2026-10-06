@@ -3,7 +3,10 @@
  * Automatically attaches JWT from sessionStorage on every request.
  */
 
-export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+// Local phones reach the API through Vite, never through their own localhost.
+export const BACKEND_URL = import.meta.env.DEV
+  ? '/backend'
+  : (import.meta.env.VITE_BACKEND_URL || '/backend');
 
 // ── Types mirroring backend responses ──────────────────────────────────────
 
