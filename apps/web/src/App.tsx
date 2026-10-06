@@ -31,6 +31,7 @@ import {
   ChevronRight,
   CheckCircle,
 } from 'lucide-react';
+import { mapConcurrent, OCR_CONCURRENCY } from './concurrentProcessing';
 import { recognizeLocally } from './localOcr';
 import { PwaControls } from './PwaControls';
 import { MetricFiducialEngine, LegalMetrologyEngine } from './engine';
@@ -250,7 +251,8 @@ function AppShell() {
 
     const allScans: TaggedScan[] = existingEntries.flatMap((entry) => entry.scans);
 
-    for (let i = existingEntries.length; i < initialEntries.length; i++) {
+    const newImageIndices = initialEntries.slice(existingEntries.length).map((_, index) => existingEntries.length + index);
+    await mapConcurrent(newImageIndices, OCR_CONCURRENCY, async (i) => {
       const entry = initialEntries[i];
       setStatusMessage(`Processing image ${i + 1}/${initialEntries.length}…`);
 
@@ -369,7 +371,9 @@ function AppShell() {
         setErrorMessage('Could not read a photograph locally. Try a clearer JPEG or PNG and confirm offline setup has finished.');
         setImages((prev) => prev.map((e, idx) => (idx === i ? { ...e, status: 'error' } : e)));
       }
-    }
+    });
+    // Completion order must not change equal-confidence field selection or evidence identity.
+    allScans.sort((a, b) => a.imageIndex - b.imageIndex);
 
     // Combine raw text across all images for the manual editor
     const combined = initialEntries.map((_, i) =>
