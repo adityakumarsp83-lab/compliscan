@@ -1,3 +1,5 @@
+import { sha256 as portableSha256 } from '@noble/hashes/sha2.js';
+
 export interface ImageEvidence {
   imageIndex: number;
   fileName: string;
@@ -13,8 +15,14 @@ export interface EvidenceManifest {
 
 /** Hash original bytes, never a thumbnail, URL, or OCR/preprocessed image. */
 export async function sha256(bytes: BufferSource): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const original = ArrayBuffer.isView(bytes)
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : new Uint8Array(bytes);
+  // Safari withholds SubtleCrypto on HTTP LAN URLs. Both paths hash the same original bytes.
+  const digest = globalThis.crypto?.subtle
+    ? new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
+    : portableSha256(original);
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export async function hashImage(image: Blob): Promise<string> {

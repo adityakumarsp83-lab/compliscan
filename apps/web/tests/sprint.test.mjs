@@ -14,7 +14,7 @@ async function load(name) {
   const source = readFileSync(new URL(`../src/${name}.ts`, import.meta.url), 'utf8');
   const output = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } });
   const target = join(directory, `${name}.mjs`);
-  await writeFile(target, output.outputText);
+  await writeFile(target, output.outputText.replace("'@noble/hashes/sha2.js'", JSON.stringify(import.meta.resolve('@noble/hashes/sha2.js'))));
   return import(pathToFileURL(target).href);
 }
 const { LegalMetrologyEngine: engine, MetricFiducialEngine } = await load('engine');
