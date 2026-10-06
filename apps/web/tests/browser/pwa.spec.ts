@@ -98,5 +98,12 @@ test('mobile PWA caches real OCR, retains originals across launches, and exports
     const keys = await new Promise<IDBValidKey[]>((resolve) => { const req = db.transaction('keyval').objectStore('keyval').getAllKeys(); req.onsuccess = () => resolve(req.result); }); db.close();
     return keys.filter((key) => String(key).startsWith('evidence:')).length;
   })).toBe(0);
+  const queuedOriginals = await reopened.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const req = indexedDB.open('keyval-store'); req.onsuccess = () => resolve(req.result); });
+    const pending = await new Promise<any[]>((resolve) => { const req = db.transaction('keyval').objectStore('keyval').getAll(); req.onsuccess = () => resolve(req.result.filter((value: any) => value?.eventId)); }); db.close();
+    return Promise.all(pending.flatMap((item: any) => item.evidence?.photos || []).map(async (photo: any) => Array.from(new Uint8Array(await photo.blob.arrayBuffer()))));
+  });
+  expect(queuedOriginals.length).toBeGreaterThanOrEqual(2);
+  expect(queuedOriginals.some(bytes => createHash('sha256').update(Buffer.from(bytes)).digest('hex') === hash)).toBe(true);
   expect(errors).toEqual([]);
 });

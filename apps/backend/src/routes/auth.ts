@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
-import { generateToken } from '../authMiddleware.js';
+import { generateToken, authMiddleware } from '../authMiddleware.js';
 import pool from '../db.js';
 
 const router = Router();
@@ -119,32 +119,10 @@ router.post('/login', async (req, res) => {
 /**
  * POST /api/auth/verify
  */
-router.post('/verify', (req, res) => {
-  const { token } = req.body;
-  if (!token) {
-    res.status(400).json({ error: 'token is required' });
-    return;
-  }
-
-  try {
-    const parts = token.split('.');
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-    if (payload.exp && payload.exp * 1000 < Date.now()) {
-      res.status(401).json({ error: 'Token expired' });
-      return;
-    }
-    res.json({
-      valid: true,
-      user: {
-        name: payload.name,
-        role: payload.role,
-        inspectorId: payload.inspectorId,
-        userId: payload.userId,
-      },
-    });
-  } catch {
-    res.status(401).json({ error: 'Invalid token' });
-  }
-});
+router.post('/verify', (req, res, next) => {
+  if (typeof req.body.token !== 'string') { res.status(400).json({ error: 'token is required' }); return; }
+  req.headers.authorization = `Bearer ${req.body.token}`;
+  void authMiddleware(req, res, next);
+}, (req, res) => res.json({ valid: true, user: (req as any).user }));
 
 export default router;

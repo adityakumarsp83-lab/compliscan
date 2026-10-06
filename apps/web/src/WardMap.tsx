@@ -7,10 +7,41 @@ import type { ComplianceReport } from './engine';
 import type { StoreAuditRecord } from './wardData';
 import 'leaflet/dist/leaflet.css';
 
-// Component to dynamically recenter the map on store selection
-function MapRecenter({ lat, lng }: { lat: number; lng: number }) {
+function MapLayout({ stores }: { stores: StoreAuditRecord[] }) {
   const map = useMap();
-  useEffect(() => { map.setView([lat, lng], 14, { animate: false }); }, [map, lat, lng]);
+  const positions = stores.map(store=>`${store.lat},${store.lng}`).join(';');
+  useEffect(() => {
+    const observer = new ResizeObserver(() => map.invalidateSize({ animate:false }));
+    observer.observe(map.getContainer());
+    map.invalidateSize({ animate:false });
+    if (stores.length) map.fitBounds(stores.map(store => [store.lat,store.lng] as [number,number]), { padding:[35,35], maxZoom:15, animate:false });
+    else map.setView([0,0],2,{ animate:false });
+    return () => observer.disconnect();
+  },[map,positions]);
+  return null;
+}
+function RiskHeatLayer({ stores }: { stores: StoreAuditRecord[] }) {
+  const map = useMap();
+  useEffect(() => {
+    const canvas = document.createElement('canvas');
+    canvas.dataset.testid = 'risk-heat-layer';
+    Object.assign(canvas.style,{ position:'absolute',inset:'0',zIndex:'350',pointerEvents:'none' });
+    map.getContainer().append(canvas);
+    const draw = () => {
+      const size = map.getSize(); canvas.width=size.x; canvas.height=size.y;
+      const ctx = canvas.getContext('2d'); if (!ctx) return;
+      for (const store of stores.filter(store=>store.status!=='COMPLIANT')) {
+        const point = map.latLngToContainerPoint([store.lat,store.lng]);
+        const radius = store.status==='VIOLATION'?60:42;
+        const gradient = ctx.createRadialGradient(point.x,point.y,2,point.x,point.y,radius);
+        gradient.addColorStop(0,store.status==='VIOLATION'?'rgba(244,63,94,.65)':'rgba(245,158,11,.45)');
+        gradient.addColorStop(1,'rgba(255,255,255,0)'); ctx.fillStyle=gradient;
+        ctx.fillRect(point.x-radius,point.y-radius,radius*2,radius*2);
+      }
+    };
+    draw(); map.on('move zoom resize',draw);
+    return () => { map.off('move zoom resize',draw); canvas.remove(); };
+  },[map,stores]);
   return null;
 }
 
@@ -29,6 +60,8 @@ export function WardInspectionDashboard({ records }: { records: StoredInspection
   }), [records]);
   const [selectedStore, setSelectedStore] = useState<StoreAuditRecord | null>(null);
   useEffect(() => { setSelectedStore((previous) => stores.find((store) => store.id === previous?.id) || stores[0] || null); }, [stores]);
+  const [tileError,setTileError] = useState(false);
+  const [showHeat,setShowHeat] = useState(true);
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
@@ -123,6 +156,10 @@ export function WardInspectionDashboard({ records }: { records: StoredInspection
             </div>
           </div>
 
+          {records.length > stores.length && <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900">
+            <strong>Inspections without location</strong>
+            {records.filter(record=>!stores.some(store=>store.id===record.id)).map(record=><p key={record.id} className="mt-2">{record.product_name} · {record.inspector_id} · {new Date(record.timestamp).toLocaleString()} — cannot place on map</p>)}
+          </div>}
           {/* Store List */}
           <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1">
             {filteredStores.map((store) => {
@@ -167,19 +204,29 @@ export function WardInspectionDashboard({ records }: { records: StoredInspection
 
         {/* Right Column: Leaflet Map & Selected Store Inspection Details */}
         <div className="lg:col-span-7 flex flex-col gap-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-600">
+            <label><input type="checkbox" checked={showHeat} onChange={event=>setShowHeat(event.target.checked)} /> Show risk heat layer</label>
+            <p className="mt-2">Green: all checks passed · Amber: review required · Red: failed checks. Overlapping findings increase intensity.</p>
+            {!stores.length && <p className="mt-2">No inspections with device coordinates yet. Allow location access over HTTPS and scan a product. The map shows an overview until real coordinates are recorded.</p>}
+            {(tileError || !navigator.onLine) && <p className="mt-2 text-amber-700">Background map tiles unavailable. Recorded inspection markers and the heat layer remain available.</p>}
+          </div>
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm h-[380px] relative">
-            {stores.length > 0 ? <MapContainer
-              center={[stores[0].lat, stores[0].lng]}
-              zoom={12}
+            <MapContainer
+              center={stores.length ? [stores[0].lat, stores[0].lng] : [0,0]}
+              zoom={stores.length ? 12 : 2}
+              zoomAnimation={false}
+              fadeAnimation={false}
               scrollWheelZoom={false}
               style={{ height: '100%', width: '100%', background: '#f8fafc' }}
             >
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                eventHandlers={{ tileerror:()=>setTileError(true) }}
               />
 
-              {selectedStore && <MapRecenter lat={selectedStore.lat} lng={selectedStore.lng} />}
+              <MapLayout stores={stores} />
+              {showHeat && <RiskHeatLayer stores={filteredStores} />}
 
               {filteredStores.map((store) => (
                 <CircleMarker
@@ -205,7 +252,7 @@ export function WardInspectionDashboard({ records }: { records: StoredInspection
                   </Popup>
                 </CircleMarker>
               ))}
-            </MapContainer> : <div className="p-8 text-sm text-slate-500">No inspections with device coordinates yet. Allow location access over HTTPS and scan a product. Map tiles require connectivity.</div>}
+            </MapContainer>
           </div>
 
           {selectedStore && (

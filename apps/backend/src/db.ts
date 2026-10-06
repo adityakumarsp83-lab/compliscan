@@ -1,9 +1,10 @@
 import { neon } from '@neondatabase/serverless';
 import dotenv from 'dotenv';
-dotenv.config();
+if (!process.env.COMPLISCAN_TEST) dotenv.config();
 
 const connectionString = process.env.DATABASE_URL || '';
-const sql = neon(connectionString, { fullResults: true });
+// Missing configuration must not crash the health endpoint at module import.
+const sql = connectionString ? neon(connectionString, { fullResults: true }) : null;
 
 export interface QueryResult<T = any> {
   rows: T[];
@@ -13,6 +14,7 @@ export interface QueryResult<T = any> {
 
 const pool = {
   async query<T = any>(queryText: string, params?: any[]): Promise<QueryResult<T>> {
+    if (!sql) throw new Error('DATABASE_URL is not configured');
     const res = await (sql as any).query(queryText, params || []);
     return {
       rows: (res.rows || []) as T[],

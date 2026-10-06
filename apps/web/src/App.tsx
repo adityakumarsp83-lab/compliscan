@@ -42,6 +42,8 @@ import { MetricFiducialEngine, LegalMetrologyEngine } from './engine';
 import type { OCRBlock, ComplianceReport, RuleCheckResult } from './engine';
 import { generateImprovementNoticePDF } from './pdfGenerator';
 import { hashImage, createEvidenceManifest, surfaceForImage } from './imageEvidence';
+import { AdminDashboard } from './AdminDashboard';
+import { InspectionSyncStatus } from './InspectionSyncStatus';
 import { WardInspectionDashboard } from './WardMap';
 import {
   evaluatePriceAndGrammageAnomalies,
@@ -53,14 +55,14 @@ import type { TaggedScan } from './tokenMerger';
 import { validatePackSize } from './secondSchedule';
 import { saveInspection, listInspections, deleteInspection, getInspectionEvidence } from './inspectionStore';
 import type { StoredInspection } from './inspectionStore';
-import { geminiOcr, isBackendOnline, saveToBackendHistory } from './apiClient';
+import { geminiOcr, isBackendOnline } from './apiClient';
 import { AuthProvider, LoginPage, useAuth } from './authContext';
 import { v4 as uuidv4 } from './uuid-shim';
 
 // ── Simple UUID shim so we don't import uuid package in browser directly ──
 // (uuidv4 is below; we alias it here for clarity)
 
-type ActiveTab = 'SCANNER' | 'HISTORY' | 'HEATMAP';
+type ActiveTab = 'SCANNER' | 'HISTORY' | 'HEATMAP' | 'ADMIN';
 
 interface ImageEntry {
   barcodeScan?: BarcodeScan;
@@ -79,6 +81,7 @@ interface ImageEntry {
 // ── Main App Shell (inside AuthProvider) ─────────────────────────────────────
 function AppShell() {
   const { user, isOfflineMode, logout } = useAuth();
+  const [revisionReason, setRevisionReason] = useState('');
   const [activeTab, setActiveTab] = useState<ActiveTab>('SCANNER');
   const [barcodeWidthPx, setBarcodeWidthPx] = useState<number>(0);
   const [selectedBarcode, setSelectedBarcode] = useState<string>('');
@@ -128,7 +131,7 @@ function AppShell() {
 
   const loadHistory = async () => {
     const records = await listInspections({ limit: Number.MAX_SAFE_INTEGER });
-    setHistoryRecords(records);
+    setHistoryRecords(records.filter(record => record.owner_username ? record.owner_username === user?.userId : record.inspector_id === user?.inspectorId));
   };
 
   const executeAudit = useCallback(
@@ -215,6 +218,7 @@ function AppShell() {
         const thumbnail = allImages[0] ? allImages[0].thumbnail : '';
         const record: StoredInspection = {
           id: auditIdRef.current ||= uuidv4(),
+          owner_username: user?.userId,
           timestamp: auditReport.timestamp,
           product_name: mergedTokens.genericName?.rawText || 'Unknown Product',
           barcode: barcodeStr,
@@ -235,17 +239,14 @@ function AppShell() {
             blob: image.file, fileName: image.file.name, lastModified: image.file.lastModified,
             surface: image.surface, sha256: image.sha256, thumbnail: image.thumbnail, scans: image.scans, barcodeScan: image.barcodeScan,
           })),
-        });
+        }, user?.userId, revisionReason);
+        window.dispatchEvent(new Event('inspection-saved'));
         await loadHistory();
-        // Also sync to backend (non-blocking)
-        if (backendOnline) {
-          saveToBackendHistory(record).catch(() => {});
-        }
       } catch {
         setErrorMessage("Audit completed, but local evidence could not be saved. Export the PDF now or free storage in History.");
       }
     },
-    [user, backendOnline, referenceWidthMm, activeImageIdx]
+    [user, backendOnline, referenceWidthMm, activeImageIdx, revisionReason]
   );
 
   const processImages = async (files: File[]) => {
@@ -568,7 +569,7 @@ function AppShell() {
     if (isProcessing || forceGeminiLoading) return;
     images.forEach((image) => URL.revokeObjectURL(image.url));
     auditIdRef.current = null; metadataRef.current = null; referenceImageShaRef.current = null;
-    setImages([]);
+    setImages([]); setRevisionReason('');
     setSelectedBarcode(''); setBarcodeWidthPx(0); setReferenceWidthMm(0); setScaleRatio(0);
     setReport(null);
     setRawText('');
@@ -615,7 +616,7 @@ function AppShell() {
       setSelectedBarcode(restoredBarcode); setAnomalyResult(null); setCopiedHash(false);
       setGeminiUsed(restored.some((image) => image.scans.some((scan) => scan.source === 'gemini')));
       const blocks = mergeBlocks(restored.flatMap((image) => image.scans));
-      setDetectedBlocks(blocks); setActiveTab('SCANNER');
+      setDetectedBlocks(blocks); setRevisionReason(''); setActiveTab('SCANNER');
       if (restored[0]) drawBoundingBoxes(blocks, restored[0].url, 0);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Could not reopen saved audit.');
@@ -657,6 +658,7 @@ function AppShell() {
 
           {/* Tab navigation */}
           <nav className="order-last w-full justify-center sm:order-none sm:w-auto flex items-center gap-1 bg-slate-100/90 border border-slate-200 p-1 rounded-xl">
+            {user?.role === 'ADMIN' && <button id="tab-admin" onClick={() => setActiveTab('ADMIN')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${activeTab === 'ADMIN' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-200/60'}`}>Admin</button>}
             {([['SCANNER', ScanLine, 'Scanner'], ['HISTORY', History, 'History'], ['HEATMAP', Map, 'Heatmap']] as const).map(
               ([tab, Icon, label]) => (
                 <button
@@ -724,7 +726,7 @@ function AppShell() {
               </div>
             )}
         {/* ── Top Officer Profile & Telemetry Bar ── */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+        {activeTab !== 'ADMIN' && <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
           {/* Inspector Badge Card */}
           <div className="md:col-span-5 bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex items-center justify-between">
             <div className="flex items-center gap-3.5">
@@ -773,10 +775,15 @@ function AppShell() {
               </span>
             </div>
           </div>
-        </div>
+        </div>}
 
+        {user?.userId && <InspectionSyncStatus owner={user.userId} />}
+        {activeTab === 'ADMIN' && user?.role === 'ADMIN' && <AdminDashboard />}
         {/* ── HEATMAP TAB ── */}
         {activeTab === 'HEATMAP' && <WardInspectionDashboard records={historyRecords} />}
+        {activeTab === 'SCANNER' && report && <label className="block bg-white border rounded-xl p-4 text-sm text-slate-600">Reason for a correction (saved with the next re-audit)
+          <input aria-label="Correction reason" value={revisionReason} onChange={e=>setRevisionReason(e.target.value)} maxLength={2000} className="block w-full mt-2 p-2 border rounded-lg" placeholder="Explain why the recorded findings or photos are changing" />
+        </label>}
 
         {/* ── HISTORY TAB ── */}
         {activeTab === 'HISTORY' && (

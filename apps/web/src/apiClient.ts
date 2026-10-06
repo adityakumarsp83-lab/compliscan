@@ -219,19 +219,32 @@ export async function paddleOcr(imageFile: File | Blob): Promise<{ data: GeminiE
 }
 
 /** POST /api/history — save a completed scan */
-export async function saveToBackendHistory(record: object): Promise<string | null> {
-  try {
-    const res = await fetch(`${BACKEND_URL}/api/history`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(record),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.id as string;
-  } catch {
-    return null; // silent fail — local IndexedDB save is primary
+export async function saveToBackendHistory(event: import('./inspectionStore').PendingInspection): Promise<object> {
+  const form = new FormData();
+  Object.entries(event.record).forEach(([key,value]) => form.append(key, String(value)));
+  form.append('client_event_id',event.eventId);
+  form.append('revision_reason',event.revisionReason);
+  event.evidence?.photos.forEach(photo => form.append('photos',photo.blob,photo.fileName));
+  const res = await fetch(`${BACKEND_URL}/api/history`, { method:'POST', headers:authHeaders(), body:form, signal:AbortSignal.timeout(45000) });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(res.status === 401 ? 'Sign in again to send pending inspections' : error.error || 'Server did not acknowledge this inspection');
   }
+  return res.json();
+}
+
+export async function adminRequest<T>(path: string, body?: object): Promise<T> {
+  const res = await fetch(`${BACKEND_URL}/api/admin${path}`, {
+    method:body ? 'POST':'GET', headers:{ ...authHeaders(), ...(body ? {'Content-Type':'application/json'}:{}) },
+    body:body ? JSON.stringify(body):undefined, signal:AbortSignal.timeout(10000), cache:'no-store',
+  });
+  if (!res.ok) { const error = await res.json().catch(() => ({})); throw new Error(error.error || 'Admin request failed'); }
+  return res.json();
+}
+export async function fetchAdminPhoto(sha: string): Promise<Blob> {
+  const res = await fetch(`${BACKEND_URL}/api/admin/evidence/${sha}`, { headers:authHeaders(), signal:AbortSignal.timeout(20000), cache:'no-store' });
+  if (!res.ok) throw new Error('Original photograph unavailable');
+  return res.blob();
 }
 
 /** GET /api/history — list past scans */

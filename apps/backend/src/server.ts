@@ -1,10 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import { isAllowedOrigin } from './origins.js';
 
 import authRouter from './routes/auth.js';
 import ocrRouter from './routes/ocr.js';
 import historyRouter from './routes/history.js';
+import adminRouter from './routes/admin.js';
 import { startPaddleServiceIfNeeded, isPaddleServiceRunning } from './paddleServiceManager.js';
 
 const app = express();
@@ -14,12 +16,7 @@ const PORT = parseInt(process.env.PORT || '4000', 10);
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g., curl, server-to-server)
-      if (!origin) return callback(null, true);
-      // Allow any localhost port in development
-      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-        return callback(null, true);
-      }
+      if (isAllowedOrigin(origin)) return callback(null, true);
       callback(new Error(`CORS: Origin ${origin} not allowed`));
     },
     credentials: true,
@@ -32,7 +29,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ── Health check ────────────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
-  const paddleActive = await isPaddleServiceRunning();
+  const paddleActive = process.env.COMPLISCAN_TEST ? false : await isPaddleServiceRunning();
   res.json({
     status: 'ok',
     service: 'CompliScan Backend',
@@ -49,6 +46,7 @@ app.get('/health', async (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api/ocr', ocrRouter);
 app.use('/api/history', historyRouter);
+app.use('/api/admin', adminRouter);
 
 // ── 404 fallback ────────────────────────────────────────────────────────────
 app.use((_req, res) => {
@@ -62,7 +60,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // ── Start ───────────────────────────────────────────────────────────────────
-app.listen(PORT, async () => {
+if (!process.env.COMPLISCAN_TEST) app.listen(PORT, async () => {
   console.log(`\n🛡️  CompliScan Backend running on http://localhost:${PORT}`);
   console.log(`   Gemini LLM: ${process.env.GEMINI_API_KEY ? '✅ Configured' : '⚠️  GEMINI_API_KEY not set'}`);
   console.log(`   Google Vision API: ${process.env.GOOGLE_VISION_API_KEY ? '✅ Configured' : '⚪ Not set (GOOGLE_VISION_API_KEY)'}`);
